@@ -152,6 +152,75 @@ Rules:
 The legacy Supabase routes remain deployed even when the flag is `1`; the flag
 only hides the forms. That is the rollback path.
 
+## After sign-in: where a member lands
+
+Auth0 completes the OAuth exchange in `middleware.js` and then sends the browser
+to the `returnTo` destination. The SDK's default is the site root, and the root
+is the public marketing page — a member who had just authenticated arrived
+somewhere that looks signed-out. Every Auth0 call to action therefore passes an
+explicit `returnTo=/auth/continue`, and `app/auth/continue/route.js` resolves the
+account and redirects once:
+
+| Context on arrival | Destination |
+|---|---|
+| no session / `UNAUTHORIZED` | `/login` |
+| `CONSENT_REQUIRED` | `/consent` (which then continues to the role home) |
+| `ACCOUNT_SUSPENDED` / `ACCOUNT_DEACTIVATED` | `/account-status?state=…` |
+| `PROFILE_NOT_FOUND` / `TENANT_UNRESOLVED` | `/login?error=account_unresolved` (the login page explains it) |
+| any unlisted error | `/login` |
+| student, onboarding incomplete | `/student/onboarding` |
+| student | `/student` |
+| `dept_lead` / `vertical_lead` | `/lead` |
+| `admin` / `platform_admin` | `/admin` |
+
+Two rules keep this safe:
+
+- Every branch must end in a redirect. A 200 in the middle of a login is a bug.
+- A deep link still wins: `/login?redirect=/student/roadmap` sends that path to
+  Auth0 as `returnTo`, so the member skips this route entirely.
+
+`tests/auth-continue-route.test.js` pins the table above.
+
+## Password for social sign-ups
+
+Google and GitHub sign-in never create a password identity, so those members
+could not later sign in with an email and password. The backend for adding one
+already existed (`ensurePasswordIdentity` in `lib/auth0-management.js`,
+`POST /api/auth/password`, `GET /api/auth/security`); the missing piece was any
+UI that called it.
+
+`components/loom/AccountSecurityCard.jsx` closes that gap and appears on
+`/student/settings` and `/admin/settings`. Deliberate constraints:
+
+- It is only **offered** when `hasPassword === false`. Replacing an existing
+  password from an open session would turn a stolen cookie into a permanent
+  account takeover; those members are pointed at the password-reset link instead.
+- It requires a verified email — a password on an unverified address would let
+  someone claim an identity they never proved.
+- With no Management API credentials it says so rather than showing a button that
+  cannot work (`hasPassword: null`).
+
+## Custom domain (only needed for embedded login)
+
+Universal Login — what the app uses today — is a redirect to the tenant domain
+(`lets-loom.jp.auth0.com`). It does not need a custom domain, and adding one does
+not change the sign-in experience unless you switch the tenant domain over.
+
+Embedded login (an Auth0 form rendered inside our own page) **does** require a
+custom domain, because it calls Auth0 cross-origin from the browser. As verified
+on 2026-11-16 that domain is not live:
+
+| Check | Result |
+|---|---|
+| `Resolve-DnsName auth.lets-loom.xyz` | `216.198.79.1`, `64.29.17.1` — Vercel's anycast IPs, the same pair `www` uses |
+| HTTPS to `https://auth.lets-loom.xyz` | `ECONNRESET` before the TLS handshake — no Auth0 edge is answering |
+| Auth0 client `lets-loom` callbacks / `web_origins` | no `auth.lets-loom.xyz` entry |
+
+Every `*.lets-loom.xyz` name currently resolves to Vercel, so the DNS record for
+an Auth0 custom domain has to be a specific record that overrides that wildcard
+and points at the tenant's Auth0 edge. Until it terminates TLS for the name,
+embedded login cannot work and turning it on would break the front door.
+
 ## Rollback
 
 1. Set `NEXT_PUBLIC_AUTH0_ONLY=0` in Vercel.
