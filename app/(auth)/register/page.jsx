@@ -5,6 +5,7 @@ import Link from "next/link";
 import { signUp } from "@/lib/auth-client";
 import { AuthField, AuthShell, authInputClass } from "@/app/(auth)/_components/AuthShell";
 import GitHubSignInButton from "@/app/(auth)/_components/GitHubSignInButton";
+import AuthHandoffNote from "@/app/(auth)/_components/AuthHandoffNote";
 import { PRIMARY_DOMAINS, domainLabel } from "@/lib/domains";
 
 // Derived from the single source of truth instead of a second hardcoded copy.
@@ -119,6 +120,7 @@ export default function RegisterPage() {
         >
           Continue with Auth0
         </a>
+        <AuthHandoffNote className="mt-3" />
         <p className="mt-5 text-xs leading-5" style={{ color: "var(--text-muted)" }}>
           By continuing you agree to LOOM&apos;s{" "}
           <Link prefetch={false} href="/terms" className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>
@@ -184,6 +186,7 @@ export default function RegisterPage() {
       >
         Continue with Auth0
       </a>
+      <AuthHandoffNote className="mt-3" />
 
       <div className="my-6 flex items-center gap-3" aria-hidden="true">
         <span className="h-px flex-1" style={{ background: "var(--line)" }} />

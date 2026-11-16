@@ -300,6 +300,12 @@ is dashboard configuration — there is nothing to deploy.
    cross-origin cookie problems (Safari and Chrome with third-party cookies
    blocked), and gives up Auth0's bot detection and brute-force protection for
    UI that we would then have to keep in sync with every new MFA/passkey screen.
+4. **Announce the hop in-app.** `/login` and `/register` print one line under
+   the Auth0 button (`app/(auth)/_components/AuthHandoffNote.jsx`): "Sign-in
+   continues on our secure Auth0 page, then you come straight back." Branding
+   alone does not help someone who was not expecting to leave the site; naming
+   the step first does. The copy deliberately avoids printing the tenant host,
+   so it stays true once a custom domain replaces `lets-loom.jp.auth0.com`.
 
 The app's own `/login` page stays as the front door and keeps its Auth0
 "Continue" button; after this it simply lands on a branded, first-party host.

@@ -8,6 +8,7 @@ import { signIn } from "@/lib/auth-client";
 import { authCallbackMessage, homeForRole, safeRedirectPath } from "@/lib/auth";
 import { AuthField, AuthShell, authInputClass } from "@/app/(auth)/_components/AuthShell";
 import GitHubSignInButton from "@/app/(auth)/_components/GitHubSignInButton";
+import AuthHandoffNote from "@/app/(auth)/_components/AuthHandoffNote";
 
 const AUTH0_ONLY = process.env.NEXT_PUBLIC_AUTH0_ONLY === "1";
 
@@ -142,6 +143,7 @@ export default function LoginPage() {
         <Suspense fallback={<a href="/auth/login?returnTo=%2Fauth%2Fcontinue" className="btn-ink w-full justify-center">Continue with Auth0</a>}>
           <Auth0Cta />
         </Suspense>
+        <AuthHandoffNote className="text-center" />
       </div>
 
       {!AUTH0_ONLY && (
