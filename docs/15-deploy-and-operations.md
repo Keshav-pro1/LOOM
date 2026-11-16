@@ -6,6 +6,11 @@ Node 20+, a Supabase project (Postgres + Auth), `DATABASE_URL` pooler string.
 
 ## 2. Environment
 
+> Two origins, one codebase. Local and production need **different** GitHub
+> OAuth Apps and a different `NEXT_PUBLIC_APP_URL` — the full matrix, including
+> the Auth0/Supabase allow-lists and the `tenant_domains` rows, is in
+> [`27-local-and-production-config.md`](27-local-and-production-config.md).
+
 | Var | Required | Purpose |
 |-----|----------|---------|
 | `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Auth + client |
@@ -13,7 +18,7 @@ Node 20+, a Supabase project (Postgres + Auth), `DATABASE_URL` pooler string.
 | `DATABASE_APP_URL` | yes in production | Request handling as `loom_app` (NOBYPASSRLS, not the table owner). `lib/env.js` falls back to `DATABASE_URL` for local work, but **production startup validation refuses to run without an explicit value** — otherwise the owner connection would silently bypass Row Level Security. `npm run rls:verify` also fails loudly. See `rls-rollout-runbook.md` |
 | `SUPABASE_SERVICE_ROLE_KEY` | for admin APIs + storage | Currently empty in dev — admin user management limited until set. Also required server-side by `lib/storage.js` (lead-tool file uploads) |
 | `SUPABASE_STORAGE_BUCKET` | no (default `loom-files`) | Private bucket for lead-tool documents/assets. Create it and seed categories with `node load/setup-storage.js` |
-| `NEXT_PUBLIC_APP_URL` | yes | metadataBase, share/verify links, calendar links. Unset in production publishes every absolute URL as `localhost` |
+| `NEXT_PUBLIC_APP_URL` | yes | metadataBase, share/verify links, calendar links, and the GitHub OAuth `redirect_uri`. Unset in production publishes every absolute URL as `localhost`; set to the **retired** host it publishes the retired host. Changing it requires a redeploy — `NEXT_PUBLIC_*` is inlined at build time |
 | `DEFAULT_TENANT_SLUG` | no (defaults to `DEV_TENANT_SLUG`) | Chapter that owns a server-to-server delivery (webhook) that carries no chapter identity in its `Host` header |
 | `DEV_TENANT_SLUG` | local yes | Local/fallback chapter slug; no hardcoded default. Production onboarding resolves the chapter from the request host or `DEFAULT_TENANT_SLUG` |
 | `DEV_TENANT_DOMAIN` | no (default `localhost`) | Host treated as the local dev tenant |

@@ -28,7 +28,8 @@ password reset instead.
 
 Register these callback URLs on the Auth0 application before testing:
 
-- Production: `https://loom-self-omega.vercel.app/auth/callback`
+- Production: `https://www.lets-loom.xyz/auth/callback`
+- Production apex (keep; the apex 308s to `www`): `https://lets-loom.xyz/auth/callback`
 - Local: `http://localhost:3000/auth/callback`
 - Playwright: `http://127.0.0.1:3000/auth/callback`
 
@@ -137,8 +138,8 @@ In Vercel → Project → Settings → Environment Variables:
 | `AUTH0_DB_CONNECTION` | `Username-Password-Authentication` |
 | `AUTH0_DB_CONNECTION_ID` | `con_...` (optional once import is done) |
 | `AUTH0_MIGRATION_SCOPES` | optional; safe to remove after import |
-| `APP_BASE_URL` | `https://loom-self-omega.vercel.app` |
-| `NEXT_PUBLIC_APP_URL` | `https://loom-self-omega.vercel.app` |
+| `APP_BASE_URL` | `https://www.lets-loom.xyz` |
+| `NEXT_PUBLIC_APP_URL` | `https://www.lets-loom.xyz` |
 
 Rules:
 

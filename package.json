@@ -30,6 +30,7 @@
     "rls:role": "node load/create-app-role.js",
     "rls:verify": "node load/verify-rls.js",
     "flag:verify": "node load/verify-gate.js status",
+    "auth:verify": "node load/verify-auth-config.mjs",
     "auth0:migrate:plan": "node load/auth0-migrate.mjs plan",
     "auth0:migrate:export": "node load/auth0-migrate.mjs export",
     "auth0:migrate:import": "node load/auth0-migrate.mjs import --confirm",
