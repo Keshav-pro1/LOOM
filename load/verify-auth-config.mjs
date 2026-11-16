@@ -234,7 +234,13 @@ export function collectPublicUrls({ env = process.env, cwd = process.cwd() } = {
 }
 
 async function checkAuth0({ lists, fix }) {
-  const domain = String(process.env.AUTH0_DOMAIN || "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  // Management calls must keep the TENANT domain as their audience even when the
+  // sign-in domain is a custom one (Auth0 rejects a custom-domain audience), so
+  // AUTH0_MANAGEMENT_DOMAIN wins here and AUTH0_DOMAIN only fills the gap.
+  const domain = String(process.env.AUTH0_MANAGEMENT_DOMAIN || process.env.AUTH0_DOMAIN || "")
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
   const appId = process.env.AUTH0_CLIENT_ID;
   const m2mId = process.env.AUTH0_MANAGEMENT_CLIENT_ID;
   const m2mSecret = process.env.AUTH0_MANAGEMENT_CLIENT_SECRET;
@@ -270,6 +276,11 @@ async function checkAuth0({ lists, fix }) {
     webOrigins: client.web_origins || []
   };
   console.log(`  app     ${client.name} (${client.app_type || "unknown type"})`);
+  console.log(`  tenant  ${domain}`);
+  const signInDomain = String(process.env.AUTH0_DOMAIN || "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  if (signInDomain && signInDomain !== domain) {
+    console.log(`  note    sign-in domain is ${signInDomain}; management stays on ${domain} (audience rule)`);
+  }
 
   const gaps =
     report("callbacks", current.callbacks, lists.auth0Callbacks).length +
