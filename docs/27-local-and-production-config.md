@@ -309,11 +309,28 @@ with the app's own secret). Register them by hand:
 > **Authorization callback URL**.
 
 An OAuth App holds exactly **one** callback URL, so a single app cannot serve
-both local dev and production. Use two apps: one with
-`http://localhost:3000/api/github/oauth/callback`, one with
-`https://www.lets-loom.xyz/api/github/oauth/callback`.
+both local dev and production: two apps are required, one per origin.
 
 Anything marked ✅ below was proven by a real request on 2026-11-16.
+
+### Provider state after this pass
+
+Both providers were found pointing **only** at the retired
+`loom-self-omega.vercel.app` host, so a real sign-in on `www.lets-loom.xyz`
+would have failed today. Corrected on 2026-11-16:
+
+| Provider | Before | After |
+|---|---|---|
+| Auth0 `lets-loom` callbacks | `loom-self-omega.vercel.app/auth/callback` | + `www`, apex, `localhost:3000`, `127.0.0.1:3000` |
+| Auth0 `allowed_logout_urls` | `loom-self-omega.vercel.app/` | + all four origins |
+| Auth0 `web_origins` | *empty* | all four origins |
+| Supabase `uri_allow_list` | old Vercel callback only | + all four `…/auth/supabase-callback` |
+| Supabase `site_url` | `https://loom-self-omega.vercel.app` | `https://www.lets-loom.xyz` |
+
+The old Vercel entries were **kept**. The merge is append-only by design: a
+retired host costs nothing to leave in place, while deleting a live preview or
+chapter domain breaks a working deployment. Removing them is a human decision.
+
 
 | Check | How | Result |
 |---|---|---|
@@ -325,14 +342,15 @@ Anything marked ✅ below was proven by a real request on 2026-11-16.
 | Protected APIs machine-401 | `/api/credentials`, `/api/admin/flags` | ✅ `{"ok":false,"error":{"code":"UNAUTHORIZED",…}}` |
 | Public APIs live | `/api/chapters`, `/api/public/events` | ✅ `200` |
 | PoW verify link resolves on the right origin | `/verify/credential/<real id>` | ✅ `200`, canonical `www`, old domain absent |
-| Supabase `redirect_to` allow-listed | `npm run auth:verify` (needs `SUPABASE_ACCESS_TOKEN`) | ⚠️ **not proven** — a `/auth/v1/authorize` probe is NOT evidence: Supabase echoes any `redirect_to` it is given, including an unregistered control URL, so the echo says nothing about the allow-list. |
+| Supabase `redirect_to` allow-listed | `npm run auth:verify` + `GET /projects/<ref>/config/auth` | ✅ all four origins present in `uri_allow_list`; `site_url` corrected to `www` |
 | Auth0 `redirect_uri` correct | `GET /auth/login` | ✅ `https://www.lets-loom.xyz/auth/callback` |
-| **Auth0 callback is in the allow-list** | `npm run auth:verify`, or one sign-in | ⚠️ **not yet proven** — the M2M app lacks `read:clients`, and Auth0's Cloudflare edge returns `403` to non-browser clients. |
-| **GitHub callback is registered as `www`** | one grant on `/student/github` — **and no API exists** | ⚠️ **cannot be automated**: `docs.github.com/en/rest/apps/oauth-applications` lists only grant/token endpoints, and GitHub defers `redirect_uri` validation until after login (a bogus callback returns the same `302`). |
+| **Auth0 callback is in the allow-list** | differential probe: allow-listed vs bogus `redirect_uri` | ✅ allow-listed → `302 /u/login`; bogus path on the same host → `403` |
+| **GitHub callback is registered as `www`** | one grant on `/student/github` — **no API exists** | ⚠️ **cannot be automated or probed**: a real callback, a fake path and a bogus domain all return the identical `302 → /login`, so validation only happens after sign-in. |
 | Latency after region pin | `/api/health` ×5 | ✅ `226–545 ms` (was `1861–5223 ms`) |
 
-The three ⚠️ rows are the only unverified items. Auth0 and Supabase are
-script-checkable once their credentials exist (§8); GitHub is not, by design,
-and is a two-field edit in the web UI. All three fail loudly
-(`Callback URL mismatch`, a Site-URL fallback, `redirect_uri_mismatch`) rather
+Auth0 is now proven by the differential above, not by a config echo: the same
+`/authorize` call with the registered callback forwards, and with an
+unregistered one on the same host is rejected `403`. Supabase is proven by
+reading `uri_allow_list` back from the Management API. GitHub is the single
+remaining unproven item and it fails loudly (`redirect_uri_mismatch`) rather
 than silently.

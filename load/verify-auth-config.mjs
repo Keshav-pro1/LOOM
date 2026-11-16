@@ -107,6 +107,27 @@ export function localOrigins(port = LOCAL_PORT) {
   return [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
 }
 
+/** A loopback origin is never the right value for a project-wide setting. */
+export function isLoopback(origin) {
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The origin to use for a setting that holds exactly one value and is shared by
+ * every visitor -- Supabase's `site_url` is the only one today. It must never be
+ * a loopback host: that is the "works on my machine, falls back to nowhere for
+ * everyone else" failure.
+ */
+export function primaryOrigin(urls = []) {
+  const origins = (Array.isArray(urls) ? urls : [urls]).map(normalizeOrigin).filter(Boolean);
+  return origins.find((origin) => !isLoopback(origin)) || origins[0] || "";
+}
+
 /**
  * Every allow-list this repo needs, derived from configuration rather than
  * hardcoded -- a hardcoded domain is what published the retired Vercel host in
@@ -131,7 +152,10 @@ export function requiredAllowLists({ publicUrl, publicUrls, extra = "" } = {}) {
     auth0Logout: origins,
     auth0WebOrigins: origins,
     supabaseRedirects: origins.map((o) => `${o}/auth/supabase-callback`),
-    githubCallbacks: origins.map((o) => `${o}/api/github/oauth/callback`)
+    githubCallbacks: origins.map((o) => `${o}/api/github/oauth/callback`),
+    // Single-valued, project-wide fallback target: only the deployment origin
+    // belongs here, never localhost.
+    supabaseSiteUrl: primaryOrigin(configured)
   };
 }
 
@@ -307,22 +331,33 @@ async function checkSupabase({ lists, fix }) {
 
   const gaps = report("redirect URLs", current, lists.supabaseRedirects).length;
 
-  if (gaps > 0 && fix) {
-    const merged = appendMissing(current, lists.supabaseRedirects).join(",");
+  // `site_url` is the fallback when a redirect is not allow-listed, so a stale
+  // value silently sends users to a dead host instead of failing loudly.
+  const wantSite = lists.supabaseSiteUrl;
+  const haveSite = String(config.site_url || "").trim().replace(/\/+$/, "");
+  const siteWrong = Boolean(wantSite) && haveSite !== wantSite;
+  if (siteWrong) {
+    console.log(`  MISS  site_url: ${haveSite || "<unset>"} -> ${wantSite}`);
+  }
+
+  if ((gaps > 0 || siteWrong) && fix) {
+    const patch = {};
+    if (gaps > 0) patch.uri_allow_list = appendMissing(current, lists.supabaseRedirects).join(",");
+    if (siteWrong) patch.site_url = wantSite;
     const write = await fetch(`https://api.supabase.com/v1/projects/${ref}/config/auth`, {
       method: "PATCH",
       headers: auth,
-      body: JSON.stringify({ uri_allow_list: merged })
+      body: JSON.stringify(patch)
     });
     if (!write.ok) {
       console.log(`  FAIL  Supabase PATCH ${write.status}: ${(await write.text()).slice(0, 200)}`);
-      return { gaps, verified: true, fixed: false };
+      return { gaps: gaps + (siteWrong ? 1 : 0), verified: true, fixed: false };
     }
-    console.log("  fixed Supabase redirect URLs (appended only)");
+    console.log("  fixed Supabase redirect URLs and site_url (allow-list appended only)");
     return { gaps: 0, verified: true, fixed: true };
   }
 
-  return { gaps, verified: true, fixed: false };
+  return { gaps: gaps + (siteWrong ? 1 : 0), verified: true, fixed: false };
 }
 
 function checkGitHub({ lists }) {
@@ -334,8 +369,8 @@ function checkGitHub({ lists }) {
   for (const callback of lists.githubCallbacks) {
     console.log(`          callback: ${callback}`);
   }
-  console.log("  note  GitHub OAuth Apps are LOCAL-ONLY: use http://localhost:3000/... for");
-  console.log("        dev and the public host for production. Two apps, not one.");
+  console.log("  note  register the callback for the origin you actually deploy to.");
+  console.log("        An OAuth App holds exactly one callback URL.");
   // `manual: true` -- no API exists, so this surface can never be proven by
   // this script. It must not degrade the exit code to "unreadable", or a run
   // with Auth0 and Supabase fully green would still report exit 2 forever.

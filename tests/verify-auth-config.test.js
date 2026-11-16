@@ -8,8 +8,10 @@ import {
   deploymentOrigins,
   diffAllowList,
   exitCodeFor,
+  isLoopback,
   localOrigins,
   normalizeOrigin,
+  primaryOrigin,
   requiredAllowLists
 } from "@/load/verify-auth-config.mjs";
 
@@ -196,6 +198,35 @@ describe("requiredAllowLists with several origins", () => {
       "http://localhost:3000/auth/callback",
       "http://127.0.0.1:3000/auth/callback"
     ]);
+  });
+});
+
+describe("isLoopback / primaryOrigin", () => {
+  it("recognises the hosts that must never hold a project-wide value", () => {
+    expect(isLoopback("http://localhost:3000")).toBe(true);
+    expect(isLoopback("http://127.0.0.1:3000")).toBe(true);
+    expect(isLoopback("https://www.lets-loom.xyz")).toBe(false);
+    expect(isLoopback("not a url")).toBe(false);
+  });
+
+  it("picks the deployment origin even when localhost is listed first", () => {
+    // .env.local is read first, so localhost genuinely comes first in the list.
+    expect(primaryOrigin(["http://localhost:3000", "https://www.lets-loom.xyz"])).toBe(
+      "https://www.lets-loom.xyz"
+    );
+  });
+
+  it("falls back to whatever exists when every origin is loopback", () => {
+    expect(primaryOrigin(["http://localhost:3000"])).toBe("http://localhost:3000");
+    expect(primaryOrigin([])).toBe("");
+  });
+
+  it("gives Supabase a non-loopback site_url", () => {
+    const lists = requiredAllowLists({
+      publicUrls: ["http://localhost:3000", "https://www.lets-loom.xyz"]
+    });
+    expect(lists.supabaseSiteUrl).toBe("https://www.lets-loom.xyz");
+    expect(isLoopback(lists.supabaseSiteUrl)).toBe(false);
   });
 });
 
