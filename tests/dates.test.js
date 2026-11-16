@@ -46,6 +46,9 @@ describe("relDay", () => {
     expect(relDay("2026-11-05T00:01:00+05:30", new Date("2026-11-04T23:59:00+05:30"))).toBe("Tomorrow");
     // 00:01 -> 23:59 later the same day is still Today.
     expect(relDay("2026-11-04T23:59:00+05:30", new Date("2026-11-04T00:01:00+05:30"))).toBe("Today");
+    // A UTC server must still use the Indian calendar: 20:00Z on 4 Nov is
+    // 01:30 IST on 5 Nov, so later that IST day is Today, not Tomorrow.
+    expect(relDay("2026-11-05T23:30:00+05:30", new Date("2026-11-04T20:00:00Z"))).toBe("Today");
   });
 });
 
