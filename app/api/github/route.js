@@ -4,6 +4,7 @@ import { getRequestContext, writeAudit } from "@/lib/auth-server";
 import { isGithubEnabled } from "@/lib/github";
 import { cryptoConfigured, open } from "@/lib/crypto";
 import { removeWebhook } from "@/lib/github-oauth";
+import { appBaseUrl } from "@/lib/app-url";
 import { env } from "@/lib/env";
 
 export async function GET() {
@@ -118,7 +119,7 @@ export async function POST(request) {
   });
 
   // Point them at the real flow instead of erroring into a dead end.
-  const start = new URL("/api/github/oauth/start", env.NEXT_PUBLIC_APP_URL);
+  const start = new URL("/api/github/oauth/start", appBaseUrl());
   return fail(
     "USE_OAUTH",
     "Linking is done through GitHub so your identity can be verified. Opening the GitHub authorization page…",
@@ -152,7 +153,7 @@ export async function DELETE() {
         const grants = await sql`
           SELECT repo_full_name FROM github_repo_grants WHERE user_id = ${user.id}
         `;
-        const webhookUrl = `${env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, "")}/api/github/webhook`;
+        const webhookUrl = `${appBaseUrl()}/api/github/webhook`;
         for (const grant of grants) {
           const result = await removeWebhook({ accessToken: token, fullName: grant.repo_full_name, webhookUrl });
           if (!result.ok) webhooks.push({ repo: grant.repo_full_name, reason: result.reason });

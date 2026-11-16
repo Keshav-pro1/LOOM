@@ -144,6 +144,22 @@ test("every static student route loads with no console errors", async ({ page })
   }
 });
 
+test("first-week journey and practice room show real account state", async ({ page }) => {
+  await page.goto("/student", { waitUntil: "domcontentloaded" });
+  const journey = page.getByRole("region", { name: "Your first week" });
+  await expect(journey).toBeVisible();
+  await expect(journey.getByText("Set your direction").first()).toBeVisible();
+  await expect(journey.getByText("Finish your first milestone").first()).toBeVisible();
+  await expect(journey.getByText("Connect GitHub").first()).toBeVisible();
+  await expect(journey.getByText("Put a project on the board").first()).toBeVisible();
+
+  await page.goto("/student/practice", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Your practice record")).toBeVisible();
+  if (await page.getByText("Starter practice").count()) {
+    await expect(page.getByText("not scored")).toBeVisible();
+  }
+});
+
 test("every dynamic student route loads with no console errors", async ({ page }) => {
   for (const path of DYNAMIC_ROUTES) {
     const r = await visit(page, path);

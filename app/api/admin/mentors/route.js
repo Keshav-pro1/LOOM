@@ -8,7 +8,7 @@ const SESSION_PAGE_SIZE = 20;
 
 const mentorSchema = z.object({
   userId: z.string().min(1),
-  expertise: z.string().max(200).default(""),
+  expertise: z.string().trim().min(1, "Add at least one area of expertise").max(200),
   bio: z.string().max(2000).default(""),
   available: z.boolean().default(true)
 });

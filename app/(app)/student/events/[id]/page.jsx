@@ -4,7 +4,7 @@ import { getRequestContext } from "@/lib/auth-server";
 import { isAdmin } from "@/lib/permissions";
 import { AppShell } from "@/components/AppShell";
 import { Display, Meta, StatusPill, ActionLink } from "@/components/loom/primitives";
-import { env } from "@/lib/env";
+import { appBaseUrl } from "@/lib/app-url";
 import { RegisterButton, FeedbackForm, MaterialForm } from "../EventsBits";
 import { EventCheckIn } from "@/components/events/EventCheckIn";
 import { EventVolunteerSignup } from "@/components/events/EventVolunteerSignup";
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 function gcalUrl(e) {
   const fmt = (d) => new Date(d).toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
   const dates = e.ends_at ? `${fmt(e.starts_at)}/${fmt(e.ends_at)}` : `${fmt(e.starts_at)}/${fmt(e.starts_at)}`;
-  const p = new URLSearchParams({ action: "TEMPLATE", text: e.title, dates, details: `${e.description || ""}\n${env.NEXT_PUBLIC_APP_URL}/student/events/${e.id}` });
+  const p = new URLSearchParams({ action: "TEMPLATE", text: e.title, dates, details: `${e.description || ""}\n${appBaseUrl()}/student/events/${e.id}` });
   if (e.location) p.set("location", e.location);
   return `https://calendar.google.com/calendar/render?${p.toString()}`;
 }

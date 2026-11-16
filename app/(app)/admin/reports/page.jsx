@@ -6,6 +6,7 @@ import { getRequestContext } from "@/lib/auth-server";
 import { AppShell } from "@/components/AppShell";
 import { WorkspaceMasthead, WorkspaceSection, WorkspaceEmpty } from "@/components/loom/WorkspaceMasthead";
 import { loadReportExport } from "@/lib/report-export";
+import { monthLabel } from "@/lib/report-month";
 import "../_components/admin-ledger.css";
 
 const PAGE_SIZE = 25;
@@ -227,7 +228,7 @@ export default async function AdminReportsPage({ searchParams }) {
                 <li key={r.id} className="aled-row" style={{ "--aled-cols": "minmax(0, 1fr) auto" }}>
                   <div className="aled-copy">
                     <span className="aled-title">
-                      {r.department_name} / {new Date(`${r.month}T00:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" })}
+                      {r.department_name} / {monthLabel(r.month) || "Unknown month"}
                     </span>
                     <p className="aled-sub">
                       {r.draft?.contributions_total ?? 0} contributions / {r.draft?.events_held ?? 0} events / {r.draft?.new_members ?? 0} new members

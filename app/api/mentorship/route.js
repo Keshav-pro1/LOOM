@@ -12,6 +12,7 @@ export async function GET() {
     SELECT m.*, p.name as mentor_name FROM mentors m
     LEFT JOIN profiles p ON p.user_id = m.user_id
     WHERE m.tenant_id = ${tenant.id}::uuid AND m.available = true
+      AND NULLIF(BTRIM(m.expertise), '') IS NOT NULL
     ORDER BY m.created_at DESC LIMIT 50
   `;
   const sessions = await sql`
@@ -50,6 +51,9 @@ export async function POST(request) {
   const mentorUserId = mentor.user_id;
   if (mentorUserId === user.id) {
     return fail("SELF_REQUEST", "You cannot request a session with yourself", 400);
+  }
+  if (!mentor.expertise || !mentor.expertise.trim()) {
+    return fail("MENTOR_SCOPE_REQUIRED", "This mentor has not published a scope yet, so requests are closed.", 409);
   }
   const [existing] = await sql`
     SELECT id FROM mentor_sessions

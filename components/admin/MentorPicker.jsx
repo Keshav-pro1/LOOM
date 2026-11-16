@@ -61,13 +61,17 @@ export function MentorPicker() {
       setMsg("Choose a member from the roster first.");
       return;
     }
+    if (!expertise.trim()) {
+      setMsg("Add at least one area of expertise so students know this mentor's scope.");
+      return;
+    }
     setBusy(true);
     setMsg("");
     try {
       const res = await fetch("/api/admin/mentors", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ userId: selected.user_id, expertise, bio })
+        body: JSON.stringify({ userId: selected.user_id, expertise: expertise.trim(), bio })
       });
       const data = await res.json();
       if (!data.ok) {
@@ -144,15 +148,15 @@ export function MentorPicker() {
         </p>
       )}
 
-      <Field label="Expertise (optional)">
-        <input value={expertise} onChange={(e) => setExpertise(e.target.value)} maxLength={200} placeholder="React, APIs, design systems" style={inputStyle} />
+      <Field label="Expertise / scope (required)">
+        <input required value={expertise} onChange={(e) => setExpertise(e.target.value)} maxLength={200} placeholder="React, APIs, design systems" style={inputStyle} />
       </Field>
       <Field label="Bio (optional)">
         <textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={2} maxLength={2000} style={inputStyle} />
       </Field>
 
       {msg && <p role="status" className="text-xs" style={{ color: msg === "Mentor saved." ? "var(--accent)" : "var(--danger)" }}>{msg}</p>}
-      <button disabled={busy || !selected} className="btn-ink w-fit disabled:opacity-50">
+      <button disabled={busy || !selected || !expertise.trim()} className="btn-ink w-fit disabled:opacity-50">
         {busy ? "Saving…" : "Save mentor"}
       </button>
     </form>

@@ -11,7 +11,7 @@ import { OnboardingState } from "@/components/loom/States";
 import { eventUrlFromPayload, isGithubEnabled, nextMoveState, repoFullNameFromPayload } from "@/lib/github";
 import { dailyTable, summarizeActivity } from "@/lib/github-activity";
 import { cryptoConfigured } from "@/lib/crypto";
-import { GithubTabs, ConnectionControls } from "./GithubBits";
+import { GithubTabs, ConnectionControls, RepoVerifyPicker } from "./GithubBits";
 import { GithubDiagnostics } from "./GithubDiagnostics";
 import { BuildTabs } from "@/components/student/SectionRails";
 
@@ -126,6 +126,9 @@ export default async function GithubPage() {
   const moveHref = move.kind === "first-push" && conn ? `https://github.com/${conn.github_username}` : move.href;
   const moveExternal = move.kind === "first-push";
   const profileUrl = conn ? `https://github.com/${conn.github_username}` : null;
+  const tokenExpired = conn?.token_expires_at
+    ? new Date(conn.token_expires_at).getTime() <= Date.now()
+    : false;
 
   const exportData = {
     username: conn?.github_username || null,
@@ -283,6 +286,45 @@ export default async function GithubPage() {
 
         <WorkspaceSection
           index="03"
+          title="Repositories GitHub confirmed"
+          note="Verified from your repository grant — not a typed claim."
+          action={<RepoVerifyPicker verified={grants.map((grant) => grant.repo_full_name)} />}
+        >
+          {grants.length === 0 ? (
+            <div className="mt-4 rounded-2xl border px-5 py-6" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
+              <p className="text-[1.05rem] font-semibold" style={{ color: "var(--text)" }}>No repositories verified yet.</p>
+              <p className="narrative mt-2">
+                Reconnect GitHub and select the repositories you own. GitHub will confirm your push access and they will appear here.
+              </p>
+            </div>
+          ) : (
+            <ul className="mt-4 divide-y rounded-2xl border" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
+              {grants.map((grant) => (
+                <li key={grant.repo_full_name} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+                  <div className="min-w-0">
+                    <a
+                      href={`https://github.com/${grant.repo_full_name}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block truncate font-mono text-sm font-semibold hover:underline"
+                      style={{ color: "var(--text)" }}
+                    >
+                      {grant.repo_full_name}
+                    </a>
+                    <p className="meta mt-1 normal-case tracking-normal">
+                      Verified {fmtLong(grant.verified_at)} · {grant.can_admin ? "Admin access" : grant.can_push ? "Push access" : "Read access"}
+                      {grant.is_private ? " · Private" : " · Public"}
+                    </p>
+                  </div>
+                  <StatusPill tone={grant.can_push ? "live" : ""}>{grant.can_push ? "Verified owner" : "Needs review"}</StatusPill>
+                </li>
+              ))}
+            </ul>
+          )}
+        </WorkspaceSection>
+
+        <WorkspaceSection
+          index="04"
           title="Verified work"
           note="Merged pull requests become LOOM evidence."
           action={<ActionLink href="/student/opensource">Open source portal</ActionLink>}
@@ -344,7 +386,7 @@ export default async function GithubPage() {
 
         <NextMove move={move} href={moveHref} external={moveExternal} />
 
-        <WorkspaceSection index="05" title="Connected account" note="Webhook events are matched to you by this username.">
+        <WorkspaceSection index="06" title="Connected account" note="Webhook events are matched to you by this username.">
           <div id="github-connection" className="mt-4 scroll-mt-24 rounded-2xl border px-5 py-5 sm:px-6" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
             <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
               <div>
@@ -360,13 +402,14 @@ export default async function GithubPage() {
                 <dd className="mt-1.5"><StatusPill tone={paused ? "" : "live"}>{paused ? "Paused" : "Live"}</StatusPill></dd>
               </div>
             </dl>
-            <p className="narrative mt-4">LOOM matches webhook events to you by this username — manual linking, no OAuth scopes. Proof comes from merged work, not from login, so keep the handle exact.</p>
+            <p className="narrative mt-4">LOOM matches webhook events to you by this username. The repository grant is used only to confirm which repositories you own — proof still comes from merged work, not from login.</p>
             <ConnectionControls
               username={conn.github_username}
               exportData={exportData}
               identityVerified={conn.github_user_id != null}
               oauthConfigured={oauthConfigured}
               tokenStorageReady={cryptoConfigured()}
+              renewNeeded={tokenExpired}
             />
           </div>
         </WorkspaceSection>
@@ -383,7 +426,7 @@ function Bridge({ eventCount, claimCount, verifiedCount, badgeCount }) {
     { n: "04", title: "Prove", body: "Badges and credentials travel beyond the chapter.", meta: `${badgeCount} badge${badgeCount === 1 ? "" : "s"}` }
   ];
   return (
-    <WorkspaceSection index="04" title="How activity becomes proof" note="Every step is backed by recorded data, not a score.">
+    <WorkspaceSection index="05" title="How activity becomes proof" note="Every step is backed by recorded data, not a score.">
       <ol className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {steps.map((s) => (
           <li key={s.n} className="row-link rounded-2xl border px-4 py-4" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>

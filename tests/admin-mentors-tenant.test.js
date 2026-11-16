@@ -69,11 +69,42 @@ describe("admin mentor scope", () => {
     });
     const { POST } = await loadRoute("@/app/api/admin/mentors/route", { sql });
 
-    expect((await POST(request("/api/admin/mentors", { userId: "student-1" }))).status).toBe(201);
+    expect((await POST(request("/api/admin/mentors", { userId: "student-1", expertise: "React" }))).status).toBe(201);
 
     const target = sql.calls.find((c) => c.text.startsWith("SELECT user_id FROM profiles"));
     expect(target.text).toContain("tenant_id = ?::uuid");
     expect(target.text).not.toContain("IS NULL");
+  });
+
+  it("corrects an existing mentor's blank scope through the same upsert", async () => {
+    const sql = recorder((text) => {
+      if (text.startsWith("SELECT user_id FROM profiles")) return [{ user_id: "mentor-1" }];
+      if (text.startsWith("INSERT INTO mentors")) {
+        return [{ id: "row-1", user_id: "mentor-1", expertise: "Cybersecurity" }];
+      }
+      return [];
+    });
+    const { POST } = await loadRoute("@/app/api/admin/mentors/route", { sql });
+
+    const response = await POST(request("/api/admin/mentors", {
+      userId: "mentor-1",
+      expertise: "Cybersecurity"
+    }));
+
+    expect(response.status).toBe(201);
+    const upsert = sql.calls.find((c) => c.text.startsWith("INSERT INTO mentors"));
+    expect(upsert.text).toContain("ON CONFLICT (user_id) DO UPDATE SET expertise = EXCLUDED.expertise");
+    expect(upsert.values).toContain("Cybersecurity");
+  });
+
+  it("rejects a mentor without a published scope", async () => {
+    const sql = recorder();
+    const { POST } = await loadRoute("@/app/api/admin/mentors/route", { sql });
+
+    const response = await POST(request("/api/admin/mentors", { userId: "student-1", expertise: "   " }));
+
+    expect(response.status).toBe(400);
+    expect(sql.calls).toHaveLength(0);
   });
 
   it("lists mentor applications only for the admin's chapter", async () => {

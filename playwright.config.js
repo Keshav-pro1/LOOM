@@ -14,12 +14,12 @@ export default defineConfig({
     // must already have run). Default stays dev so CI's e2e job, which does not
     // build, keeps working. Either way an already-listening server is reused.
     command: process.env.E2E_PROD === "1" ? "npm run start" : "npm run dev",
-    url: "http://127.0.0.1:3000",
+    url: "http://localhost:3000",
     reuseExistingServer: true,
     timeout: 120000
   },
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: "http://localhost:3000",
     trace: "on-first-retry"
   },
   projects: [

@@ -4,6 +4,7 @@ import { ThemeProvider } from "@/lib/theme";
 import "./globals.css";
 import { SiteFrame } from "@/components/landing/SiteFrame";
 import CustomCursor from "@/components/landing/CustomCursor";
+import { appBaseUrl } from "@/lib/app-url";
 
 const geistSans = Geist({
   subsets: ["latin"],
@@ -31,7 +32,7 @@ const display = Fraunces({
 });
 
 export const metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
+  metadataBase: new URL(appBaseUrl()),
   alternates: { canonical: "/" },
   title: {
     default: "LOOM — Learn. Build. Prove. Connect.",
