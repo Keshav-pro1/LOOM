@@ -331,6 +331,19 @@ The old Vercel entries were **kept**. The merge is append-only by design: a
 retired host costs nothing to leave in place, while deleting a live preview or
 chapter domain breaks a working deployment. Removing them is a human decision.
 
+> ⚠️ **The retired host is not dead — it is still a live deployment.** On
+> 2026-11-16 `https://loom-self-omega.vercel.app/` returned `200` and
+> `/auth/login` still redirected into Auth0. That makes it a second working
+> origin for the same Auth0 application and the same Supabase project.
+>
+> The risk is not today; it is the day that Vercel project is deleted. Vercel
+> subdomains are released when a project goes away, and anyone who then claims
+> `loom-self-omega.vercel.app` inherits a callback URL that both providers still
+> trust — an authorization code delivered to someone else's server. Either keep
+> that deployment alive deliberately, or remove its entries from Auth0
+> (`callbacks`, `allowed_logout_urls`) and Supabase (`uri_allow_list`) at the
+> same time you delete the project. `--fix` will not remove them for you.
+
 
 | Check | How | Result |
 |---|---|---|
