@@ -7,13 +7,20 @@ import { EventCard, EVENT_CARD_SIZE, clip, eventDateLine, seatsLine } from "@/li
 
 const FONT = readFileSync("node_modules/@vercel/og/dist/Geist-Regular.ttf");
 
+// EventCard treats an event as concluded once its start time has passed
+// (lib/eventCard.jsx isPastEvent), so a hardcoded date silently flips this
+// fixture to "concluded" the day after it is written -- which it did on
+// 2026-11-14. Derive the date from the clock: every assertion below is about
+// what the card shows for an event that has not happened yet.
+const DAY_MS = 86_400_000;
+
 const EVENT = {
   id: "7a1f5e6c-1d2b-4c3a-9e8f-0a1b2c3d4e5f",
   event_type: "hackathon",
   title: "Midnight Build Sprint",
   domain: "web",
-  starts_at: "2026-11-14T12:30:00Z",
-  ends_at: "2026-11-15T06:00:00Z",
+  starts_at: new Date(Date.now() + 3 * DAY_MS).toISOString(),
+  ends_at: new Date(Date.now() + 4 * DAY_MS).toISOString(),
   location: "Innovation Lab, Block C",
   capacity: 120,
   registered_count: 84,
@@ -62,7 +69,9 @@ describe("event artwork", () => {
   });
 
   it("formats a real start date and degrades to an empty string", () => {
-    expect(eventDateLine(EVENT.starts_at)).toMatch(/14 Nov/);
+    // A fixed input on purpose: this asserts the format, not the clock, so it
+    // stays valid forever (the fixture above is what tracks "the future").
+    expect(eventDateLine("2026-11-14T12:30:00Z")).toMatch(/14 Nov/);
     expect(eventDateLine("not-a-date")).toBe("");
   });
 });
@@ -72,7 +81,7 @@ describe("event card content", () => {
     const text = cardText(EVENT);
     expect(text).toContain("Midnight Build Sprint");
     expect(text).toContain("HACKATHON");
-    expect(text).toContain("14 Nov");
+    expect(text).toContain(eventDateLine(EVENT.starts_at));
     expect(text).toContain("Innovation Lab, Block C");
     expect(text).toContain("36 of 120 seats left");
     expect(text).toContain("loom.example/events");
@@ -83,6 +92,15 @@ describe("event card content", () => {
     const text = cardText({ ...EVENT, status: "past" });
     expect(text).toContain("Event concluded");
     expect(text).toContain("EVENT CONCLUDED");
+    expect(text).not.toContain("SIGN IN TO CLAIM A SEAT");
+  });
+
+  // The branch that broke: status still says "upcoming", but the start time
+  // has passed. This is what silently turned the whole suite red two days
+  // after the fixture was written, so it gets its own assertion.
+  it("treats an event whose start time has passed as concluded whatever status says", () => {
+    const text = cardText({ ...EVENT, status: "upcoming", starts_at: "2020-01-01T00:00:00Z" });
+    expect(text).toContain("Event concluded");
     expect(text).not.toContain("SIGN IN TO CLAIM A SEAT");
   });
 
