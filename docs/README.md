@@ -22,6 +22,7 @@ Learning, Opportunity, Open source, Mentorship — one student journey per chapt
 | [**Auth0 migration**](24-auth0-migration.md) | Operators, developers | Dry-run, export, import, verification, cutover, and rollback for existing Supabase accounts |
 | [**Hardening and integration plan**](25-hardening-and-integration-plan.md) | Operators, developers, product | P0 security/data fixes, backend and workflow hardening, coupling cleanup, department integrations, and phased execution |
 | [**RLS rollout runbook**](rls-rollout-runbook.md) | Operators | Enabling database-level tenant isolation, verifying it, rolling it back |
+| [**Local & production config**](27-local-and-production-config.md) | Operators | One codebase, two origins: separate GitHub OAuth Apps, Auth0/Supabase allow-lists, `NEXT_PUBLIC_APP_URL` in Vercel, `tenant_domains` rows, and the function-region fix |
 
 ## Read this before deploying
 

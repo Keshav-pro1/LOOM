@@ -6,6 +6,7 @@ import { Meta } from "@/components/loom/primitives";
 import { WorkspaceMasthead, WorkspaceSection } from "@/components/loom/WorkspaceMasthead";
 import SettingsClient from "./SettingsClient";
 import EmailVerificationCard from "./EmailVerificationCard";
+import AccountSecurityCard from "@/components/loom/AccountSecurityCard";
 import { AppearancePanel } from "./AppearancePanel";
 import { maskEmail, verificationConfigured } from "@/lib/email-verification";
 
@@ -75,6 +76,8 @@ export default async function SettingsPage() {
           email={maskEmail(user.email)}
           configured={verificationConfigured()}
         />
+
+        <AccountSecurityCard />
 
         <div id="privacy" className="scroll-mt-20">
           <WorkspaceSection index="02" title="Privacy" note="You control what becomes visible.">

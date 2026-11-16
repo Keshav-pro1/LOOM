@@ -67,8 +67,13 @@ rather than silent, but there is **no** automated re-seal path yet.
 | `CREDENTIAL_SECRET` | Signs the OAuth `state` parameter (CSRF defence). Falls back to the webhook secret if unset, but set it explicitly — rotating one then silently affects the other. |
 | `DATABASE_APP_URL` | Must be the `loom_app` role, not the owner, or RLS stays a no-op. |
 
-The production `NEXT_PUBLIC_APP_URL` is `https://lets-loom.xyz` (local
-development uses `http://localhost:3000`).
+Production `NEXT_PUBLIC_APP_URL` must be the public origin,
+`https://www.lets-loom.xyz` — the apex 308s to `www`, and this value must match
+the registered callback character for character
+(see [`docs/27-local-and-production-config.md`](27-local-and-production-config.md)).
+`https://loom-self-omega.vercel.app` is the retired Vercel origin: leaving it set
+publishes canonicals, sitemap entries **and the OAuth `redirect_uri`** on the old
+host, which is exactly the mismatch this section is trying to avoid.
 
 ---
 
@@ -79,8 +84,12 @@ development uses `http://localhost:3000`).
 | Field | Value |
 |---|---|
 | Application name | `LOOM` |
-| Homepage URL | `https://lets-loom.xyz` |
-| **Authorization callback URL** | `https://lets-loom.xyz/api/github/oauth/callback` |
+| Homepage URL | `https://www.lets-loom.xyz` |
+| **Authorization callback URL** | `https://www.lets-loom.xyz/api/github/oauth/callback` |
+
+> ⚠️ `www`, not the apex. GitHub compares the `redirect_uri` the app sends
+> against this exact string; the apex 308-redirect does **not** satisfy it, so
+> registering `https://lets-loom.xyz/...` fails with `redirect_uri_mismatch`.
 
 Then **Generate a new client secret**.
 
@@ -93,20 +102,26 @@ verified email from Supabase's provider.
 
 ### Local development
 
-GitHub OAuth Apps **do** accept `http://localhost:3000` as a callback URL, but
-each OAuth App has exactly one Authorization callback URL. Production and local
-development therefore need **two OAuth Apps**:
+GitHub OAuth **Apps** accept an `http://localhost:PORT/...` callback (only
+*GitHub Apps* reject `localhost`), so the repository grant works locally — but
+only with its **own** OAuth App, because an OAuth App has exactly one
+Authorization callback URL and §2's is bound to production.
 
-| App | Authorization callback URL | Used by |
-|---|---|---|
-| `LOOM` (production) | `https://lets-loom.xyz/api/github/oauth/callback` | Vercel production |
-| `LOOM (local)` | `http://localhost:3000/api/github/oauth/callback` | `.env.local` |
+Create a second app, `LOOM Local`:
 
-Put the local app's client ID/secret in `.env.local`, and the production app's
-in Vercel. Do **not** point one app at both: GitHub rejects the redirect with
-`redirect_uri_mismatch` when the `redirect_uri` does not exactly match the single
-registered value. If you deliberately use `127.0.0.1:3000`, register that origin
-instead; the app builds the callback from `NEXT_PUBLIC_APP_URL`.
+| Field | Value |
+|---|---|
+| Homepage URL | `http://localhost:3000` |
+| **Authorization callback URL** | `http://localhost:3000/api/github/oauth/callback` |
+
+Put its Client ID / Secret in `.env.local` (never in Vercel) together with
+`NEXT_PUBLIC_APP_URL=http://localhost:3000`. Before this was split, local and
+production shared one app, so every local call to `/api/github/oauth/start`
+redirected to the production callback and either failed with
+`redirect_uri_mismatch` or completed the grant against the deployed site.
+
+Preview deployments still need a third app (or a second callback URL on a
+dedicated preview app) for the same one-callback reason.
 
 ---
 
@@ -135,9 +150,13 @@ Dashboard → **Authentication → URL Configuration → Redirect URLs**, add:
 
 ```
 https://lets-loom.xyz/auth/supabase-callback
+https://www.lets-loom.xyz/auth/supabase-callback
 http://localhost:3000/auth/supabase-callback
 http://127.0.0.1:3000/auth/supabase-callback
 ```
+
+Add **both** the apex and the `www` host while Vercel's apex→`www` redirect is in
+place; the browser lands on whichever host the redirect chain ends at.
 
 Supabase will refuse to redirect to anything not on this list. Add every
 production, preview, and local origin you actually use.

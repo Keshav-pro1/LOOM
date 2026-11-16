@@ -12,7 +12,9 @@
 //   node load/auth0-migrate.mjs verify
 //
 // Required env: DATABASE_URL, AUTH0_DOMAIN, AUTH0_MANAGEMENT_CLIENT_ID,
-// AUTH0_MANAGEMENT_CLIENT_SECRET. Import also needs AUTH0_DB_CONNECTION_ID
+// AUTH0_MANAGEMENT_CLIENT_SECRET. AUTH0_MANAGEMENT_DOMAIN is optional and wins
+// over AUTH0_DOMAIN for API calls (keep it on the tenant domain when sign-in
+// uses a custom domain). Import also needs AUTH0_DB_CONNECTION_ID
 // (or an M2M grant with read:connections so it can resolve the connection).
 import fs from "node:fs";
 import path from "node:path";
@@ -32,8 +34,13 @@ function sleep(ms) {
 }
 
 function auth0Domain() {
-  const value = String(process.env.AUTH0_DOMAIN || "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  if (!value) throw new Error("AUTH0_DOMAIN is not set.");
+  // Management API audience must stay on the TENANT domain even when sign-in
+  // moves to a custom domain, so AUTH0_MANAGEMENT_DOMAIN takes precedence.
+  const value = String(process.env.AUTH0_MANAGEMENT_DOMAIN || process.env.AUTH0_DOMAIN || "")
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
+  if (!value) throw new Error("AUTH0_DOMAIN (or AUTH0_MANAGEMENT_DOMAIN) is not set.");
   return value;
 }
 
