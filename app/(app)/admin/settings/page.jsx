@@ -4,6 +4,7 @@ import { Building2, Globe, ShieldCheck } from "lucide-react";
 import { getRequestContext } from "@/lib/auth-server";
 import { AppShell } from "@/components/AppShell";
 import { WorkspaceMasthead, WorkspaceSection } from "@/components/loom/WorkspaceMasthead";
+import AccountSecurityCard from "@/components/loom/AccountSecurityCard";
 import "../_components/admin-ledger.css";
 
 export default async function AdminSettingsPage() {
@@ -64,6 +65,8 @@ export default async function AdminSettingsPage() {
             <li>Rollups: run nightly via cron (see docs/15). Until then, analytics snapshots may lag.</li>
           </ul>
         </WorkspaceSection>
+
+        <AccountSecurityCard />
       </main>
     </AppShell>
   );
