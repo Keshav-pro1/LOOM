@@ -200,13 +200,27 @@ UI that called it.
 - With no Management API credentials it says so rather than showing a button that
   cannot work (`hasPassword: null`).
 
-## Custom domain (only needed for embedded login)
+## Custom domain (optional — not in use)
 
-Universal Login — what the app uses today — is a redirect to the tenant domain
-(`lets-loom.jp.auth0.com`). It does not need a custom domain, and adding one does
-not change the sign-in experience unless you switch the tenant domain over.
+**Decision (2026-11-16): not using one.** Auth0 requires a **credit card on file**
+to issue a free custom domain ("for verification purposes and fraud prevention",
+not charged). Without a card the domain cannot be added, and it is not needed for
+the path we chose: Universal Login works on the tenant domain
+(`lets-loom.jp.auth0.com`) and every callback stays on `www`.
 
-Embedded login (an Auth0 form rendered inside our own page) **does** require a
+The only cost of skipping it is cosmetic — the address bar shows
+`lets-loom.jp.auth0.com` during sign-in — plus one forward-looking caveat: passkeys
+are bound to the login domain (`rpId`), so if passkeys are adopted later they will
+be scoped to the tenant domain unless a custom domain exists by then.
+
+Do **not** try to fake it with a Cloudflare/Vercel proxy: Auth0 validates a
+`cname-api-key` header for proxied domains and that is an Enterprise-only,
+self-managed-certificate path.
+
+Universal Login is a redirect to the tenant domain. Adding a custom domain would
+not change the sign-in flow; it changes the host in the address bar.
+
+Embedded login (an Auth0 form rendered inside our own page) **would** require a
 custom domain, because it calls Auth0 cross-origin from the browser. As verified
 on 2026-11-16 that domain is not live:
 
@@ -220,6 +234,75 @@ Every `*.lets-loom.xyz` name currently resolves to Vercel, so the DNS record for
 an Auth0 custom domain has to be a specific record that overrides that wildcard
 and points at the tenant's Auth0 edge. Until it terminates TLS for the name,
 embedded login cannot work and turning it on would break the front door.
+
+The runbook below is kept so the step is mechanical if a card is added later.
+
+### Adding the custom domain (Auth0-managed certificate)
+
+DNS for `lets-loom.xyz` is hosted by Vercel (`ns1/ns2.vercel-dns.com`). The
+CNAME target is issued per tenant by the dashboard — do not copy one from a blog.
+
+1. Auth0 Dashboard → **Branding → Custom Domains → Add Domain**, enter
+   `auth.lets-loom.xyz`, choose **Auth0-managed certificates**. Auth0 requires a
+   credit card on file for a free custom domain (not charged).
+2. The dashboard shows the CNAME value. In Vercel → **Domains → lets-loom.xyz →
+   DNS Records**, add `CNAME auth <value>`. A specific record overrides the
+   `*.lets-loom.xyz` wildcard, so this is allowed. Leave TTL at the default and
+   do not enable CNAME flattening or a proxy.
+3. Click **Verify** in Auth0. The certificate is generated in 1–2 minutes; the
+   record must stay in place permanently or renewal fails.
+4. **Social connections need their redirect URI updated.** In each provider's
+   settings add `https://auth.lets-loom.xyz/login/callback`. If Google is using
+   Auth0 **developer keys**, that will not work on a custom domain — create your
+   own Google OAuth client first and paste its ID/secret into the connection.
+5. App environment, then redeploy:
+
+   | Variable | Value |
+   |---|---|
+   | `AUTH0_DOMAIN` | `auth.lets-loom.xyz` |
+   | `AUTH0_MANAGEMENT_DOMAIN` | `lets-loom.jp.auth0.com` |
+   | `APP_BASE_URL` | `https://www.lets-loom.xyz` (unchanged) |
+
+   `AUTH0_MANAGEMENT_DOMAIN` is not cosmetic: Auth0 only accepts the **tenant**
+   domain in the Management API audience, so pointing `AUTH0_DOMAIN` at the
+   custom domain without it would break password management and
+   `npm run auth:verify` while sign-in still looked fine.
+
+6. **Everyone is signed out once.** Sessions created on the old domain are not
+   valid on the new one; that is expected, not a regression.
+
+Verify with real requests:
+
+```powershell
+# issuer must be the custom domain
+Invoke-RestMethod https://auth.lets-loom.xyz/.well-known/openid-configuration | Select-Object issuer
+# /auth/login must now bounce to the branded host
+node load/verify-auth-config.mjs   # should print the sign-in/tenant note
+```
+
+Callback URLs do not move: the app is still served from `www`, so
+`https://www.lets-loom.xyz/auth/callback` stays as registered.
+
+## Branding the hosted login page
+
+The sign-in surface is Auth0's Universal Login, not our React code, so branding
+is dashboard configuration — there is nothing to deploy.
+
+1. **Branding → Universal Login** — set the logo, page background and primary
+   button colour to the LOOM palette (the values in `app/globals.css`:
+   ink `#111`, paper `#f4f1ea`, accent `#c2410c`). Keep the default page rather
+   than a fully custom one unless there is a reason: a custom page must be
+   maintained against Auth0 template changes and can break MFA and
+   passkey prompts.
+2. **Branding → Universal Login → Customize** — set the page title and the
+   "Sign up" copy so the hand-off reads as LOOM, not "Welcome to lets-loom".
+3. Leave **embedded login off**. Embedded login needs the custom domain, adds
+   cross-origin cookie problems (Safari and Chrome with third-party cookies
+   blocked), and gives up Auth0's bot detection and brute-force protection for
+   UI that we would then have to keep in sync with every new MFA/passkey screen.
+
+The app's own `/login` page stays as the front door and keeps its Auth0
+"Continue" button; after this it simply lands on a branded, first-party host.
 
 ## Rollback
 
