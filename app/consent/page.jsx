@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getRequestContext, hasCurrentConsent } from "@/lib/auth-server";
+import { homeForRole } from "@/lib/auth";
 import { POLICY_VERSIONS } from "@/lib/legal";
 import { AuthShell } from "../(auth)/_components/AuthShell";
 import { ConsentForm } from "./ConsentForm";
@@ -16,11 +17,20 @@ export default async function ConsentPage() {
   if (!ctx.user) redirect("/login?redirect=/consent");
   if (!ctx.profile || !ctx.tenant) redirect("/login?redirect=/consent");
 
+  // Where "Accept and continue" goes. This used to be a hardcoded /student, so a
+  // lead or admin who accepted the policies was dropped into the student
+  // workspace; the layout then had to bounce them a second time.
+  const role = ctx.profile?.role;
+  const next =
+    role === "student" && !ctx.profile?.onboarding_completed
+      ? "/student/onboarding"
+      : homeForRole(role);
+
   const current = await hasCurrentConsent(ctx.sql, {
     userId: ctx.user.id,
     tenantId: ctx.tenant.id
   });
-  if (current) redirect("/student");
+  if (current) redirect(next);
 
   return (
     <AuthShell>
@@ -35,6 +45,7 @@ export default async function ConsentPage() {
       <ConsentForm
         termsVersion={POLICY_VERSIONS.terms}
         privacyVersion={POLICY_VERSIONS.privacy}
+        next={next}
       />
     </AuthShell>
   );

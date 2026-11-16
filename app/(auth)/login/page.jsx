@@ -15,9 +15,15 @@ const AUTH0_ONLY = process.env.NEXT_PUBLIC_AUTH0_ONLY === "1";
 // the email form honours, so an Auth0 login deep-links to the page that sent the
 // user here instead of dumping them on the default home. The SDK validates
 // returnTo again on its side (toSafeRedirect), so this is defence in depth.
+//
+// With no explicit destination the default is /auth/continue, NOT the site root.
+// The SDK's own default is the root, which is the public marketing page -- a
+// member who had just signed in landed there and it reads as "login did not
+// work". /auth/continue resolves the role and sends them to the right workspace.
 function Auth0Cta() {
   const redirect = safeRedirectPath(useSearchParams().get("redirect"));
-  const href = redirect ? `/auth/login?returnTo=${encodeURIComponent(redirect)}` : "/auth/login";
+  const target = redirect || "/auth/continue";
+  const href = `/auth/login?returnTo=${encodeURIComponent(target)}`;
   return <a href={href} className="btn-ink w-full justify-center">Continue with Auth0</a>;
 }
 
@@ -133,7 +139,7 @@ export default function LoginPage() {
       </p>
 
       <div className="mt-6 space-y-3">
-        <Suspense fallback={<a href="/auth/login" className="btn-ink w-full justify-center">Continue with Auth0</a>}>
+        <Suspense fallback={<a href="/auth/login?returnTo=%2Fauth%2Fcontinue" className="btn-ink w-full justify-center">Continue with Auth0</a>}>
           <Auth0Cta />
         </Suspense>
       </div>
@@ -160,7 +166,7 @@ export default function LoginPage() {
         New here?{" "}
         <Link
           prefetch={false}
-          href={AUTH0_ONLY ? "/auth/login?screen_hint=signup&returnTo=%2Fstudent%2Fonboarding" : "/register"}
+          href={AUTH0_ONLY ? "/auth/login?screen_hint=signup&returnTo=%2Fauth%2Fcontinue" : "/register"}
           className="font-semibold hover:underline"
           style={{ color: "var(--accent)" }}
         >

@@ -114,7 +114,7 @@ export default function RegisterPage() {
           Create your account once, then link GitHub or another provider from the same identity.
         </p>
         <a
-          href="/auth/login?screen_hint=signup&returnTo=%2Fstudent%2Fonboarding"
+          href="/auth/login?screen_hint=signup&returnTo=%2Fauth%2Fcontinue"
           className="btn-ink mt-6 w-full justify-center"
         >
           Continue with Auth0
@@ -179,7 +179,7 @@ export default function RegisterPage() {
       </p>
 
       <a
-        href="/auth/login?screen_hint=signup&returnTo=%2Fstudent%2Fonboarding"
+        href="/auth/login?screen_hint=signup&returnTo=%2Fauth%2Fcontinue"
         className="btn-ink mt-6 w-full justify-center"
       >
         Continue with Auth0
