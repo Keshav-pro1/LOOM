@@ -5,10 +5,12 @@ import {
   exchangeCode,
   fetchAuthenticatedUser,
   fetchRepoPermissions,
-  verifyState
+  verifyState,
+  isValidPkceVerifier
 } from "@/lib/github-oauth";
 import { seal } from "@/lib/crypto";
 import { recomputeScore, recordEvidence } from "@/lib/ranking";
+import { appBaseUrl } from "@/lib/app-url";
 import { env } from "@/lib/env";
 import crypto from "node:crypto";
 
@@ -72,7 +74,13 @@ export async function GET(request) {
     .map((c) => c.trim())
     .find((c) => c.startsWith(`${STATE_COOKIE}=`));
   const cookieValue = rawCookie ? rawCookie.slice(STATE_COOKIE.length + 1) : "";
-  const [cookieNonce, encodedRepos] = cookieValue.split(".");
+  // Format: <nonce>.<pkce verifier>.<encoded repos>. Split only the first two
+  // dots: repository names may legitimately contain a dot, and truncating them
+  // would silently drop part of the student's selection.
+  const cookieParts = cookieValue.split(".");
+  const cookieNonce = cookieParts.shift() || "";
+  const cookieVerifier = cookieParts.shift() || "";
+  const encodedRepos = cookieParts.join(".");
   if (!cookieNonce || !timingSafe(cookieNonce, checked.nonce)) {
     // The cookie is the second, independent half of the CSRF defence. A valid
     // signature replayed without the matching cookie does not get through.
@@ -82,18 +90,29 @@ export async function GET(request) {
     });
     return redirect(`${origin}/student/github?error=github_invalid_state`);
   }
+  // PKCE is the third half: a code intercepted from the redirect is useless
+  // without the verifier that stayed in this HttpOnly cookie.
+  if (!isValidPkceVerifier(cookieVerifier)) {
+    await writeAudit({
+      sql, actorId: user.id, tenantId: tenant?.id,
+      action: "github_oauth_state_rejected", resource: "github_oauth", resourceId: "PKCE_VERIFIER_MISSING"
+    });
+    return redirect(`${origin}/student/github?error=github_invalid_state`);
+  }
   // Consume the cookie regardless of what follows, so a legitimate retry after a
   // mid-flow failure cannot reuse it.
-  const cleared = clearStateCookie(env.NEXT_PUBLIC_APP_URL.startsWith("https"));
+  const base = appBaseUrl();
+  const cleared = clearStateCookie(base.startsWith("https"));
 
-  const redirectUri = `${env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, "")}/api/github/oauth/callback`;
+  const redirectUri = `${base}/api/github/oauth/callback`;
 
   // --- 4. exchange ---
   const exchanged = await exchangeCode({
     code,
     clientId: env.GITHUB_CLIENT_ID,
     clientSecret: env.GITHUB_CLIENT_SECRET,
-    redirectUri
+    redirectUri,
+    codeVerifier: cookieVerifier
   });
   if (!exchanged.ok) {
     await writeAudit({
@@ -125,14 +144,30 @@ export async function GET(request) {
     return cleared(redirect(`${origin}/student/github?error=github_already_linked`));
   }
 
+  // Changing the GitHub account is not the same as refreshing the connection.
+  // The old account's evidence and grants must be revoked first, which is what
+  // DELETE /api/github does; without this guard the callback would silently
+  // rebind identity while leaving the previous account's proof in place.
+  const [current] = await sql`
+    SELECT github_user_id FROM github_connections
+    WHERE user_id = ${user.id}
+    LIMIT 1
+  `;
+  if (current?.github_user_id != null && String(current.github_user_id) !== String(me.id)) {
+    await writeAudit({
+      sql, actorId: user.id, tenantId: tenant?.id,
+      action: "github_oauth_rejected", resource: "github_oauth", resourceId: "IDENTITY_SWAP_REQUIRES_UNLINK"
+    });
+    return cleared(redirect(`${origin}/student/github?error=github_unlink_first`));
+  }
+
   // A handle rename must not orphan the connection: rebind the display name
   // unconditionally, since GitHub has just told us what it currently is.
   //
-  // The token is stored sealed, but nothing reads it back yet. That is
-  // deliberate: there is no feature that needs it today (grants are cached in
-  // github_repo_grants), and a stored-credential read path with no caller is
-  // attack surface for no benefit. When re-verification is wired, unseal through
-  // lib/crypto.js `open()` at that point.
+  // The token is stored sealed. Repository lists and writes unseal it lazily
+  // through readAccessToken(), which also refreshes an expired token before
+  // handing it back; an unreadable token fails closed rather than falling back
+  // to a typed handle.
   await sql`
     INSERT INTO github_connections
       (user_id, github_username, github_user_id, access_token_cipher, refresh_token_cipher,
@@ -194,7 +229,7 @@ export async function GET(request) {
       const hook = await ensureWebhook({
         accessToken: exchanged.accessToken,
         fullName: perm.fullName,
-        webhookUrl: `${env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, "")}/api/github/webhook`,
+        webhookUrl: `${base}/api/github/webhook`,
         secret: env.GITHUB_WEBHOOK_SECRET
       });
       if (hook.ok && hook.installed) {

@@ -2,7 +2,8 @@
   "name": "LOOM",
   "author": "Yash Bansal <heyashdevelops@gmail.com>",
   "contributors": [
-    "Yash Gupta"
+    "Yash Gupta",
+    "Shaurya Aswal"
   ],
   "version": "0.2.0",
   "private": true,
@@ -17,6 +18,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "db:migrate": "node load/migrate.js",
+    "db:status": "node load/schema-status.js",
     "db:seed": "node load/seed-control-plane.js && node load/seed-content.js",
     "db:seed:roadmaps": "node load/seed-roadmaps.js && node load/seed-node-resources.js",
     "db:verify": "node load/verify-roadmap-shelf.js",
@@ -28,6 +30,11 @@
     "rls:role": "node load/create-app-role.js",
     "rls:verify": "node load/verify-rls.js",
     "flag:verify": "node load/verify-gate.js status",
+    "auth:verify": "node load/verify-auth-config.mjs",
+    "auth0:migrate:plan": "node load/auth0-migrate.mjs plan",
+    "auth0:migrate:export": "node load/auth0-migrate.mjs export",
+    "auth0:migrate:import": "node load/auth0-migrate.mjs import --confirm",
+    "auth0:migrate:verify": "node load/auth0-migrate.mjs verify",
     "prune:retention": "node load/prune-retention.js",
     "rollup:analytics": "node load/rollup-analytics.js",
     "rollup:federation": "node load/rollup-federation.js"
@@ -41,13 +48,12 @@
     "gsap": "^3.12.5",
     "lucide-react": "^0.468.0",
     "motion": "^11.15.0",
-    "next": "^15.5.27",
+    "next": "^15.5.28",
     "postgres": "^3.4.5",
-    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.10.1",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
@@ -55,10 +61,10 @@
     "@types/node": "20.17.6",
     "@types/react": "19.3.0",
     "eslint": "^9.15.0",
-    "eslint-config-next": "^15.5.27",
-    "satori": "0.33.3",
+    "eslint-config-next": "^15.5.28",
+    "satori": "0.33.5",
     "tailwindcss": "^4.0.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "postcss": "8.5.28",
@@ -67,6 +73,7 @@
     "fflate": "^0.8.3",
     "brace-expansion": "^2.0.2",
     "fast-glob": "^3.3.3",
-    "@next/eslint-plugin-next": "^15.5.27"
+    "@next/eslint-plugin-next": "^15.5.27",
+    "satori": "0.33.5"
   }
 }

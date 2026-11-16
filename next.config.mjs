@@ -17,13 +17,20 @@ const nextConfig = {
     // Security headers for every response, including static files and
     // logged-out pages. Middleware cannot cover sitemap.xml, robots.txt, or
     // public assets (its matcher excludes them so they are never auth-gated),
-    // so the static set lives here. HSTS is unconditional: browsers ignore it
+    // so this static set lives here. HSTS is unconditional: browsers ignore it
     // over plain HTTP per RFC 6797, and enforce it over HTTPS in production.
+    //
+    // Content-Security-Policy is deliberately NOT here. It needs a fresh nonce
+    // per request, so middleware.js owns it (see lib/csp.js) and sets it on
+    // every response it returns. Nothing that can execute script reaches the
+    // browser without passing through middleware: its matcher only skips
+    // _next/static, _next/image, favicon.ico, sitemap.xml, robots.txt and
+    // static assets (images/fonts/css/js/txt/html). The only HTML document it
+    // skips is the Search Console verification file, which carries no script.
     return [
       {
         source: "/(.*)",
         headers: [
-          { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.supabase.co; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; connect-src 'self' https://*.supabase.co https://*.supabase.in wss://*.supabase.co; frame-ancestors 'none'" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },

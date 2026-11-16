@@ -6,10 +6,10 @@ How LOOM fits together: request path, roles, data, pages, workflows, and how to 
 
 Next.js 15 (React 19) monolith — there is no custom backend. Route handlers under `app/api/` talk directly to a single shared Postgres (Supabase-hosted, PgBouncer pooler `:6543`) with one connection string:
 
-- **Auth**: Supabase Auth. Browser/session via `@supabase/ssr` cookies; server identity revalidated per request with `getUser()`.
-- **Data**: `postgres` package via `lib/db.js` — `postgres(env.DATABASE_URL, { max: 10, idle_timeout: 10, prepare: false })`. `prepare: false` is mandatory: the pooler runs in transaction mode, where named prepared statements vanish between checkouts. Drizzle (`db/tenant-schema.js`, `db/control-plane-schema.js`) is a type/query mirror; most handlers use raw `sql` template literals.
+- **Auth**: Auth0 is the primary front door (`@auth0/nextjs-auth0`); Supabase Auth remains the legacy/E2E fallback. `lib/user-identities.js` maps a verified Auth0 `sub` (or a verified Supabase OAuth identity) to one canonical `profiles.user_id`, so adding a provider does not split the account. Existing Supabase accounts migrate with `load/auth0-migrate.mjs`; see `24-auth0-migration.md`.
+- **Data**: `postgres` package via `lib/db.js` — `postgres(env.DATABASE_URL, { max: 10, idle_timeout: 10, prepare: false })`. `prepare: false` is mandatory: the pooler runs in transaction mode, where named prepared statements vanish between checkouts. There is no ORM or schema mirror; handlers use raw `sql` template literals.
 - **Tenancy**: single-DB row-level tenancy. `profiles.tenant_id → tenants.id` is the root; every tenant query filters on it. Host→tenant resolution lives in `lib/tenant.js` (`getTenantFromRequest`, 60s memoized `queryTenant` in `lib/db.js`).
-- **Async work**: the GitHub webhook aggregates inline into `student_daily_activity` on delivery (no queue, no cron); `load/rollup-analytics.js` / `load/rollup-federation.js` compile nightly snapshots. Rate limits are in-memory per instance (see `docs/13-api-reference.md`).
+- **Async work**: the GitHub webhook aggregates inline into `student_daily_activity` on delivery; `load/rollup-analytics.js` / `load/rollup-federation.js` compile nightly snapshots. A durable outbox (`outbox` table, migrations 066/067, `lib/outbox.js`) exists for side effects that must be retried, but no consumer is migrated onto it yet and no scheduler calls its drain job — queued rows wait for `GET /api/jobs/run?job=outbox-drain`. Rate limits are in-memory per instance (see `docs/13-api-reference.md`).
 - **Config surface**: `.env.local` (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `DATABASE_APP_URL`, `NEXT_PUBLIC_APP_URL`, `DEV_TENANT_SLUG`, `DEFAULT_TENANT_SLUG`, `DEV_TENANT_DOMAIN`, `GITHUB_WEBHOOK_SECRET`, `CREDENTIAL_SECRET`, QStash/Upstash, R2, Sentry). See `.env.example` and `docs/15-deploy-and-operations.md`.
 
 ## 2. Request lifecycle
@@ -18,9 +18,9 @@ Next.js 15 (React 19) monolith — there is no custom backend. Route handlers un
 middleware.js → getRequestContext() → can() → handler → writeAudit()
 ```
 
-1. **middleware.js** — `getUser()` revalidates the JWT with Auth and refreshes the token when near expiry; refreshed cookies are written onto the response so the session survives the browser closing. (It used to call `getSession()`, a cookie-local read with no refresh, which is why signing in did not persist across a tab close.). Exact-match public allowlist (`/`, `/about`, `/faq`, `/events`, `/login`, `/register`, `/setup`, `/auth/callback`, `/api/health`, `/api/chapters`, `/api/public/*`, `/api/admin/check-setup`, `/api/admin/claim-first`, `/api/github/webhook`) plus prefix rules for `/verify/*` and `/domains/*`. Everything else: APIs get machine-readable `401 UNAUTHORIZED`, pages redirect to `/login?redirect=…`. Static assets and `_next/*` are never gated.
+1. **middleware.js** — `getUser()` revalidates the JWT with Auth and refreshes the token when near expiry; refreshed cookies are written onto the response so the session survives the browser closing. (It used to call `getSession()`, a cookie-local read with no refresh, which is why signing in did not persist across a tab close.). Exact-match public allowlist (`/`, `/about`, `/faq`, `/events`, `/login`, `/register`, `/setup`, `/auth/supabase-callback`, `/api/auth/providers`, `/api/health`, `/api/chapters`, `/api/public/*`, `/api/admin/check-setup`, `/api/admin/claim-first`, `/api/github/webhook`) plus prefix rules for `/verify/*` and `/domains/*`. Everything else: APIs get machine-readable `401 UNAUTHORIZED`, pages redirect to `/login?redirect=…`. Static assets and `_next/*` are never gated.
 2. **getRequestContext** (`lib/auth-server.js`) — the single source of truth for authN/authZ. `getUser()` revalidates the JWT; loads `profiles` by `user_id` (auto-creates a `student` row on first login from signup metadata, plus instant `general` department memberships — best-effort, never breaks login); resolves/backfills `tenants`; attaches `department_memberships` to the profile (shape matches `lib/permissions.js`); maps `platform_admins` rows to effective role `admin`. `adminOnly: true` returns `FORBIDDEN` for non-admins. **Tenant is always derived server-side from the profile — never trusted from the client.**
-3. **can()** (`lib/permissions.js`) — the 27-action matrix (Section 3 of the Website Plan plus `verify_evidence` and six lead-tool actions) as a pure function: `can(user, action, scope) → { ok, note }`. `note` carries the conditional cells: `needs_approval` (dept-lead society posts), `needs_signoff` (suspend), `recommend_only` (VL on budget), `suggest_only` (VL on FAQ), `view_only` (VL on advisor; core on lead tools/assets), `limited` (dept-lead directory = name+dept), `own_feed` (dept announcements), `own_only` (roster/exports). The lead tools (`view_lead_tools`, `manage_mou`, `manage_leads`, `manage_event_ops`, `view_assets`, `manage_assets`) sit between student and admin: Head/Co-Head and above edit, `core` reads only, students have no standing. Admins and `platform_admin` bypass (`isAdmin`). Legacy `role === "admin"` boundaries keep working via `isAdmin`; new code uses `can()`.
+3. **can()** (`lib/permissions.js`) — the 29-action matrix (Section 3 of the Website Plan plus `verify_evidence` and six lead-tool actions) as a pure function: `can(user, action, scope) → { ok, note }`. `note` carries the conditional cells: `needs_approval` (dept-lead society posts), `needs_signoff` (suspend), `recommend_only` (VL on budget), `suggest_only` (VL on FAQ), `view_only` (VL on advisor; core on lead tools/assets), `limited` (dept-lead directory = name+dept), `own_feed` (dept announcements), `own_only` (roster/exports). The lead tools (`view_lead_tools`, `manage_mou`, `manage_leads`, `manage_event_ops`, `view_assets`, `manage_assets`) sit between student and admin: Head/Co-Head and above edit, `core` reads only, students have no standing. Admins and `platform_admin` bypass (`isAdmin`). Legacy `role === "admin"` boundaries keep working via `isAdmin`; new code uses `can()`.
 4. **Handler** — zod validation → tenant-scoped SQL → response envelope `{ ok: true, data }` / `{ ok: false, error: { code, message } }` (`lib/api.js`).
 5. **Audit** — mutations call `writeAudit()` (`audit_logs`) and usually `notify()` (`notifications`). Both are best-effort: they never break the request.
 
@@ -50,9 +50,10 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 | Table | Stores → read / written by |
 |-------|----------------------------|
 | `profiles` | Identity/role/tenant/vertical/roll_number/branch + `role_term_start/role_term_end` [048] — the single source of truth; an expired term downgrades the governing role to `core` → `ctx`, `GET/PATCH /api/profile`, `GET/PATCH /api/admin/students`, bulk assign; written by first-login auto-create, grant upward-sync, admin edits |
-| `tenants` | Chapter rows (`demo-college` seeded) → `queryTenant`, `/api/network`, public APIs; written by `seed-control-plane.js` |
+| `people_checklist_items` | Per-role onboarding/offboarding completion [073]; templates in `lib/people.js`, panel on `/admin/students/[id]`; closing an account requires every offboarding item |
+| `tenants` | Chapter rows (slug/name configured per deployment) → `queryTenant`, `/api/network`, public APIs; written by `seed-control-plane.js` |
 | `tenant_domains` | Host→tenant mapping → `getTenantFromRequest` (webhook, `/api/public/*`); written by seed |
-| `departments` | 8 seeded org units + head/co-head pointers + vertical → `/api/departments`, `/api/public/departments`, `/domains*`, lead/admin overviews; written by `seed-departments.js` (no admin UI — DB-managed) |
+| `departments` | 11 seeded org units (8 technical + 3 non-technical) + head/co-head pointers + vertical → `/api/departments`, `/api/public/departments`, `/domains*`, lead/admin overviews; written by `seed-departments.js` (no admin UI — DB-managed) |
 | `department_memberships` | User↔dept `level` (general/core/dept_lead) + `core_requested` + `succession_ready` + `term_start/term_end` [048] (an ended `dept_lead` row stops conferring authority) → attached on every `ctx`, rosters; written by join / request-core / grant PATCH |
 | `platform_admins` | Setup claimants → `ctx` effective role; `is_founder`/`locked`/`label` [048] mark permanent founder seats immune to role changes; written by `/api/admin/claim-first` (founder) and `load/seed-founder.js` |
 | `leadership_terms` | Append-only appointment history (`role`, `vertical`, `department_id`, `starts_on`/`ends_on`, `status` active/ended/expired) with partial unique indexes against two active non-department terms per user/role → `load/expire-terms.js`; written by admin role changes |
@@ -75,6 +76,13 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 | `mentor_sessions` | Mentor↔student sessions → `/api/mentorship` |
 | `mentor_reviews` | 1–5 ratings (unique mentor+reviewer) → `/api/social/discover` (mentor review), discover page |
 
+**Debug & Build** — real bugs in an external starter repository, verified before review.
+
+| Table | Stores -> read / written by |
+|-------|----------------------------|
+| `debug_challenges` | Admin-authored catalogue row: LOOM primary domain, slug, title, difficulty, `repo_path`, brief, verification notes, publish flag + `published_at` (the fork-created-after boundary) -> `/student/debug(+[slug])`, `/admin/debug`; written by `POST /api/admin/debug/challenges` |
+| `debug_submissions` | One member fork per challenge: fork URL/owner/repository id, cached GitHub verification state/reason, PR URL, human review state/feedback/reviewer -> `/student/debug`, `/lead/debug`, `/admin/debug`; written by `POST /api/debug/submissions` and reviewed through `POST /api/lead/debug` |
+
 **Proof & Credentials** — verifiable outcomes.
 
 | Table | Stores → read / written by |
@@ -93,7 +101,7 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 | `forum_threads` / `forum_replies` / `forum_votes` / `forum_flags` | Threads, replies, vote toggles, moderation flags → `/api/community/*`; mod queue at `/api/admin/community`, flags page |
 | `wiki_pages` / `wiki_edit_requests` | Versioned pages (unique tenant+slug) + student suggestions → `/api/community/wiki(+[slug])`, wiki pages |
 | `code_snippets` | Shared snippets → `/api/community/snippets`, snippets page |
-| `announcements` | Society/vertical/department broadcasts, fanned out to `notifications` → `GET/POST /api/announcements` (visibility derived from memberships) |
+| `announcements` | Society/vertical/department broadcasts with draft → published lifecycle, optional expiry, and preview composer at `/lead/announcements` + `/admin/announcements` → `GET/POST /api/announcements`, `PATCH /api/announcements/[id]` (visibility derived from memberships; drafts never reach students) |
 | `member_contributions` | Contribution ledger (project/competition/certification/event; self- or lead-logged) → `GET/POST /api/contributions`, lead `recentLogs`, report export |
 | `faqs` | Public Q&A per tenant → `/faq` page (published only), `GET/POST/PATCH /api/admin/faq`, `seed-faq.js` |
 | `notifications` | Per-user inbox → `GET /api/notifications`, mark-read; written by every `notify()` call |
@@ -111,13 +119,13 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 
 | Table | Stores → read / written by |
 |-------|----------------------------|
-| `volunteer_slots` / `volunteer_signups` | Titled capacity slots per event + one-seat-per-member signups → `GET/POST /api/volunteers`, `POST/DELETE …/[id]/signup` (capacity enforced live) |
-| `dept_reports` | One row per (department, month): auto-compiled JSON draft → submitted → `GET/POST /api/reports`, `GET/PATCH …/[id]`, compiled from the lead console |
-| `handover_checklists` | Admin continuity items + done flags → `GET/POST /api/handover`, `PATCH …/[id]` |
-| `lead_handovers` | Guided seat transitions: outgoing/successor, brief JSON, transfer flags, draft→submitted→completed → `GET/POST /api/lead/handover`, `PATCH …/[id]`, `POST …/[id]/transfer`; transfer logic in `lib/handover.js` |
-| `budget_heads` | Budget envelopes, optional vertical (NULL = society-wide) → `GET /api/finance`, admin finance page (created directly in DB) |
-| `expenses` | Proposed→approved/rejected spend → `POST` (leads+ propose) / `PATCH` decide (admin only) `/api/finance/expenses` |
-| `sponsorships` | Sponsor pipeline→committed→received + `vertical` [048] (NULL = society-wide) → `POST/PUT /api/finance/sponsorships` (admin); a VL reads their own vertical plus society-wide rows |
+| `volunteer_slots` / `volunteer_signups` | Titled capacity slots per event + one-seat-per-member signups → `GET/POST /api/volunteers`, `POST/DELETE …/[id]/signup` (capacity enforced live); operator roster on the shared event ops page |
+| `dept_reports` | One row per (department, month): auto-compiled JSON draft + lead narrative → submitted → `GET/POST /api/reports`, `GET/PATCH …/[id]`, compiled from the lead console |
+| `handover_checklists` | Admin continuity items + done flags + named owner/department [075] → `GET/POST /api/handover`, `PATCH …/[id]` |
+| `lead_handovers` | Guided seat transitions: outgoing/successor, brief JSON, transfer flags, draft→submitted→completed → `GET/POST /api/lead/handover`, `PATCH …/[id]`, `POST …/[id]/transfer`; transfer logic in `lib/handover.js`; the unified read model (`lib/succession.js`) merges these rows, checklist ownership and term expiries, outstanding first |
+| `budget_heads` | Budget envelopes, optional vertical (NULL = society-wide) + owning `department_id` [070] → `GET /api/finance`, admin finance page |
+| `expenses` | Proposed→approved/rejected→paid, receipt metadata, paid_by/paid_at [070] → `POST` (leads+ propose, must hold the charged head) / `PATCH` decide or pay (admin only) `/api/finance/expenses` |
+| `sponsorships` | Sponsor pipeline→committed→received + `vertical` [048] (NULL = society-wide), `updated_at/by` [070] → `POST/PUT /api/finance/sponsorships` (admin or scoped VL); `/student/sponsors` reads committed/received only |
 
 **GitHub pipeline** — link → deliver → verify → aggregate.
 
@@ -145,7 +153,7 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 | `feature_flags` | Per-tenant kill-switches (`github_integration`, `contests`, `mentorship`) → `queryTenant().features`, webhook gate; written by `/api/admin/flags` |
 | `audit_logs` | Every audited mutation (actor/action/resource/before/after) → `writeAudit`; read by `/api/admin/audit`, audit page |
 | `schema_migrations` | Applied-migration ledger → written by `node load/migrate.js` |
-| `tenant_database_routes` | Present in the Drizzle control-plane mirror but **absent from the live DB** — treated as reserved, unused |
+| `tenant_database_routes` | **Absent from the live DB** — reserved name, unused |
 
 ## 5. Page map
 
@@ -158,29 +166,32 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 | `/faq` | Published FAQs only |
 | `/events` + `/events/[id]` | Upcoming public events and per-event detail pages (canonical, Event JSON-LD, per-event OG card, sitemap); registration stays signup-only and deep-links back through `/login?redirect=` |
 | `/domains` + `/domains/[slug]` | Department catalog + per-department page (workshops, projects); unknown slugs get an empty state, not a 404 |
-| `/login` / `/register` | Supabase auth; register captures name/roll/branch/year + department picks into `user_metadata` |
+| `/login` / `/register` | Auth0 is the primary front door; Supabase auth remains the migration/E2E fallback. Register metadata captures name/roll/branch/year + department picks, and onboarding now captures a public handle plus optional password |
 | `/setup` | First-admin claim (refuses once `platform_admins` is non-empty) |
 | `/verify` + `/verify/credential/[id]` | Public proof check: HMAC re-verified, view counted |
-| `/auth/callback` | Supabase code exchange |
+| `/auth/callback` | Auth0 code exchange |
+| `/auth/supabase-callback` | Supabase code exchange (legacy email + GitHub identity path) |
 
 **App** (session-gated; layouts re-enforce roles).
 
 | Area | Pages |
 |------|-------|
-| `/student` | Home dashboard (roadmap progress, GitHub, threads, horizon). Learn: `roadmap`, `roadmap/[nodeId]`, `resources`, `resources/[resourceId]`, `projects`, `projects/new`, `projects/[id]`, `github`, `opensource`, `contests`, `contests/[id]`. Gather: `events`, `events/[id]`, `community/forums(+[id])`, `community/wiki(+[slug])`, `community/snippets`, `mentorship`, `network(+[slug])`, `discover`. Proof: `credentials`, `certificates(+[code])`, `insights`, `leaderboard`. Self: `[username]`, `notifications`, `onboarding`, `settings`, `privacy`. |
-| `/lead` | Lead console (shared query in `lib/lead.js` with `GET /api/lead/overview`): led departments + roster + core requests, workshops, `proposed` approval queue (VL/admin), vertical calendar with conflict detection (VL/admin), succession flags, recent contribution logs, report compile/submit entry. |
-| `/lead` · `/admin` · Chapter tools | Mirror of four operations tools, each with its own API and a server page in both consoles: `assets` (media/creative library — uploads to the private `loom-files` bucket, immutable versions, signed-URL downloads, link-out rows; `lib/assets.js`), `mous` (MoU database with partner/status/value metadata and versioned documents; `lib/mou.js`), `directory` (internal leadership directory — name, dept, tenure, links; `lib/directory.js`), `event-ops` (per-event task board with owner, priority, deadline; `lib/event-ops.js`). Edit needs Head/Co-Head, VL, or admin; `core` reads only. Deadlines feed the reminder job (below). |
-| `/admin` | `overview` command deck (per-dept cards + approval counts); `students(+[id])` roles/memberships + bulk; `analytics` rollups; `audit` trail; `community` mod queue; `flags` kill-switches; `contests`, `events` (+attendance), `opensource` (curation + claims), `verification` (badges/achievements/mentors); `projects`, `resources`, `roadmaps` content; `reports` submitted + export; `finance` heads/expenses/sponsors; `faq` manager; `settings`. |
+| `/student` | Home dashboard (roadmap progress, GitHub, threads, horizon). Learn: `roadmap`, `roadmap/[nodeId]`, `resources`, `resources/[resourceId]`, `projects`, `projects/new`, `projects/[id]`, `github`, `opensource`, `contests`, `contests/[id]`. Build: `debug` catalogue and `debug/[slug]` challenge/submission. Gather: `events`, `events/[id]`, `community/forums(+[id])`, `community/wiki(+[slug])`, `community/snippets`, `mentorship`, `network(+[slug])`, `discover`. Proof: `credentials`, `certificates(+[code])`, `insights`, `leaderboard`. Self: `[username]`, `notifications`, `onboarding`, `settings`, `privacy`. |
+| `/lead` | Lead console (shared query in `lib/lead.js` with `GET /api/lead/overview`): led departments + roster + core requests, workshops, `proposed` approval queue (VL/admin), vertical calendar with conflict detection (VL/admin), succession flags, recent contribution logs, report compile/submit entry. `debug` is the domain-scoped verified-fork review queue plus approved fixes that can be returned. |
+| `/lead` · `/admin` · Chapter tools | Mirror of four operations tools, each with its own API and a server page in both consoles: `assets` (media/creative library — uploads to the private `loom-files` bucket, immutable versions, signed-URL downloads, link-out rows; `lib/assets.js`), `mous` (MoU database with partner/status/value metadata, versioned documents, optional sponsorship link, and owned renewal tasks in a due-date attention queue; `lib/mou.js`), `directory` (internal leadership directory — name, dept, tenure, links; `lib/directory.js`), `event-ops` (per-event task board with owner, priority, deadline; `lib/event-ops.js`). Edit needs Head/Co-Head, VL, or admin; `core` reads only. Deadlines feed the reminder job (below). |
+| `/admin` | `overview` command deck (per-dept cards + approval counts); `students(+[id])` roles/memberships + bulk role/department (confirmed), account status + per-role checklists; `mentors` session operations; `analytics` rollups; `audit` trail; `community` mod queue; `flags` kill-switches; `contests`, `events` (+attendance), `opensource` (curation + claims), `debug` (challenge catalogue + all submissions), `verification` (badges/achievements/mentors); `projects`, `resources`, `roadmaps` content; `reports` submitted + export; `finance` heads/expenses/sponsors; `faq` manager; `settings`. |
 
 ## 6. Key workflows
 
-1. **Signup → member.** Register (metadata: name, roll_number, branch, year, department slugs) → Supabase user → first `getRequestContext` creates `profiles(student)` + `general` memberships → lands on `/student/onboarding` → roadmap. No approval anywhere.
+1. **Signup → member.** Register through Auth0 (or the legacy Supabase form) → `lib/user-identities.js` resolves one canonical `profiles.user_id` → first `getRequestContext` creates `profiles(student)` + `general` memberships → `/student/onboarding` captures the public handle and optional password → roadmap. No approval anywhere.
 2. **Core request → grant.** Member `POST …/[id]/request-core` (creates `general` membership with `core_requested=true` if none) → Head/Co-Head sees request in `/lead` roster → `PATCH …/members/[userId]` `{level: core}` → profile role syncs upward to `core` → `notifications` row + `audit_logs` entry.
 3. **Workshop propose → approve.** Dept lead `POST /api/events` with `scope: department` + own `departmentId` → live (`upcoming`, attached). Same lead with `scope: society` → `proposed` → VL/admin sees it in `/lead` proposed queue or `/admin/events` → `POST /api/events/[id]/approve` `{approve}` → `upcoming` (or `cancelled`) + author notified.
 4. **OSS claim → webhook verify.** Student links GitHub (`/api/github`) and, for project ownership, completes the repository OAuth grant (`/api/github/oauth/start`, scopes `repo` + `read:user`) → claims a PR/issue URL in a tracked repo (`claimed`, 20/min, canonical URL) → webhook delivery (HMAC-checked, 120/min/tenant) stored idempotently in `github_events` → merged PR or submitted review in a tracked repo auto-verifies the claim (`oss_verified` / review evidence) + awards `oss_badges`/achievements + notifies → aggregation happens inline in the same webhook request. Admins can also verify/reject manually (same side effects, idempotent).
-5. **Monthly report → export.** Dept lead opens `/lead` → draft auto-compiles from live counts (contributions by kind, events held, new members, upcoming) → `POST /api/reports` (one row per dept+month) → edits → `PATCH …/[id]` `{status: submitted}` (terminal; only admin reopens) → VL/admin reads at `/admin/reports` → `GET /api/reports/export?scope=semester|annual` downloads JSON.
+5. **Monthly report → export.** Dept lead opens `/lead` → draft auto-compiles from live counts (contributions by kind, events held, new members, upcoming) → `POST /api/reports` (one row per dept+month) → edits → `PATCH …/[id]` `{status: submitted}` (terminal; only admin reopens) → VL/admin reads at `/admin/reports` → `GET /api/reports/export?scope=semester|annual` downloads JSON, CSV, or PDF (all rendered from one shared payload); `/admin/reports` renders the same department x month coverage grid the export carries.
 6. **Expense propose → approve.** Dept/VL/admin `POST /api/finance/expenses` (`proposed`, head + optional department) → admin-only `PATCH` `{approved|rejected}` + `decided_by` → society/VL-visible spend updates in `GET /api/finance`. VLs are `recommend_only` — they cannot decide.
 7. **Webhook ingestion + kill-switch.** GitHub `POST /api/github/webhook` (tenant from host header, HMAC `x-hub-signature-256`, ping acked without storage) → if `github_integration` flag off for the tenant: ack `{accepted: false, reason: GITHUB_INGESTION_PAUSED}`, store nothing (opt-in since migration 020; toggled at `/admin/flags`) → else store idempotently → best-effort OSS auto-verify → 200. Failures after signature check never fail the ack.
+
+8. **Debug challenge -> verified fork -> review.** Admin publishes a challenge only after its content exists in `DEBUG_CHALLENGE_REPO` (default `L-OO-M/buggy`); publishing stamps `published_at`. Student forks that repository after publication, commits from the GitHub login already linked in `github_connections`, and submits the fork on `/student/debug/[slug]`. The route checks owner identity, fork parent, creation time and an authored commit (GitHub outages stay `error`/pending, never auto-rejected; a fork repository id can belong to one member). The matching domain lead (or an admin) sees verified forks on `/lead/debug` and approves or returns with mandatory feedback; approval upserts `debug_fixed` ranking evidence and recompute runs in the same transaction, returning removes it, and both audit + notify.
 
 ## 7. Contributing guide
 
@@ -188,7 +199,7 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 
 **Migrations.** Tracked, ordered, idempotent: add `load/migrations/NNN_name.sql` (every statement `IF NOT EXISTS`, constraints added via `DROP CONSTRAINT IF EXISTS` + re-add), apply with `node load/migrate.js` (`npm run db:migrate`). The runner records names in `schema_migrations` and skips applied files. Never edit an applied migration — write a new one.
 
-**Seeds.** `npm run db:seed` = control-plane (tenant, domains, flags) + content (roadmap nodes, resources). Then `node load/seed-departments.js` (8 departments, non-technical start inactive) and `node load/seed-faq.js` (idempotent on `(tenant_id, slug)`). `node load/seed-dev.js` (`db:seed:dev`) is **LOCAL ONLY** — it refuses production, and must never run against the shared DB. `node load/wipe-dev.js --confirm` removes seed/dummy rows only; `--full` truncates all data tables (keeps schema + ledger); both refuse production.
+**Seeds.** `npm run db:seed` = control-plane (tenant, domains, flags) + content (roadmap nodes, resources). Then `node load/seed-departments.js` (11 departments, all active) and `node load/seed-faq.js` (idempotent on `(tenant_id, slug)`). `node load/seed-dev.js` (`db:seed:dev`) is **LOCAL ONLY** — it refuses production, and must never run against the shared DB. `node load/wipe-dev.js --confirm` removes seed/dummy rows only; `--full` truncates all data tables (keeps schema + ledger); both refuse production.
 
 **Tests.** `npm test` (vitest, `tests/**/*.test.js`, node env, `@` alias). `npm run test:e2e` (Playwright: chromium + Pixel 7, `reuseExistingServer`, `webServer.timeout: 120000` — first run pays Next.js cold compile, so allow ~2 min before judging a failure). `npm run lint` (eslint `next/core-web-vitals`) must pass before handing off.
 
@@ -196,20 +207,20 @@ Five levels plus platform: `student` (General) < `core` < `dept_lead` (Head and 
 
 ## 8. Post-audit hardening (no-dummy-data pass)
 
-- Seed wipe: all seed-user-* rows removed from the shared DB via load/wipe-dev.js --confirm; orphaned content (1 event, 1 thread, 1 wiki page) reassigned to the real admin; 20 fixed a live webhook 500 (
-ormalized.payload never existed) found by HMAC-signed delivery tests.
-- Tenant renamed Demo College ? MSIT (	enants.name, chapter_profiles.public_name); seed-control-plane is now insert-only on tenant name so reruns never clobber it.
-- New surfaces: LevelGuide (auth pages explain all 5 levels; roles are granted, never self-selected), StatTiles (visual metric tiles on student/admin/lead dashboards), /admin/departments (create/rename/archive), /admin/handover (transfer checklist board), budget-head creation on /admin/finance, global pp/error.jsx + pp/not-found.jsx, role-scoped assignment in PATCH /api/admin/students (dept_lead requires department + fills Head?Co-Head slots; vertical_lead requires vertical).
+- Seed wipe: all seed-user-* rows removed from the shared DB via load/wipe-dev.js --confirm; orphaned content (1 event, 1 thread, 1 wiki page) reassigned to the real admin; 20 fixed a live webhook 500 (normalized.payload never existed) found by HMAC-signed delivery tests.
+- Tenant renamed Demo College → MSIT (tenants.name, chapter_profiles.public_name); seed-control-plane is now insert-only on tenant name so reruns never clobber it.
+- New surfaces: LevelGuide (auth pages explain all 5 levels; roles are granted, never self-selected), StatTiles (visual metric tiles on student/admin/lead dashboards), /admin/departments (create/rename/archive), /admin/handover (transfer checklist board), budget-head creation on /admin/finance, global app/error.jsx + app/not-found.jsx, role-scoped assignment in PATCH /api/admin/students (dept_lead requires department + fills Head?Co-Head slots; vertical_lead requires vertical).
 
 
 ## 9. Security invariants (ported from retired 02-tenant-and-security-model)
 
 - Tenant identity never comes from the client: authority is profiles.tenant_id (lib/auth-server.js); host/domain lookup (lib/tenant.js) is only a fallback helper for public pages.
-- Every mutation runs session ? tenant membership ? role check (lib/permissions.js can()) ? zod validation ? standard {ok,data/error} envelope ? writeAudit() (+ 
-otify() where a human waits)./api/* returns machine 401 {ok:false}; pages redirect to /login.
+- Every mutation runs session ? tenant membership ? role check (lib/permissions.js can()) ? zod validation ? standard {ok,data/error} envelope ? writeAudit() (+ notify() where a human waits)./api/* returns machine 401 {ok:false}; pages redirect to /login.
 - GitHub webhook verifies x-hub-signature-256, rejects unsigned/mismatched with 401, dedupes on GitHub delivery id, and honors the per-chapter pause gate (GITHUB_INGESTION_PAUSED) before storing anything.
 - Audit rows carry actor, tenant, action, resource type/id, before/after, request metadata, timestamp; append-only in app flows.
 - Secrets live only in env / .env.local (untracked). load/*.js scripts share load/env-local.js and refuse to run without DATABASE_URL; hardcoded connection strings were purged.
+- The chapter cannot lose its last active admin through a role change, account suspension/deactivation, or bulk role write: `lib/last-admin.js` locks every active admin row (`FOR UPDATE`) inside the write transaction, then refuses the removal. Handover transfer promotes the successor before demoting the outgoing seat and keeps the same guarantee.
+- Succession has one read model (`lib/succession.js`): checklist items (each with a named owner), handover briefs, transfer flags and leadership-term expiries are merged outstanding-first and surfaced by `GET /api/admin/succession` + `/admin/handover`.
 - Tenant isolation is **layered**, and only one layer is guaranteed. The
   application layer (`WHERE tenant_id = ...` in every query) is always on.
   The database layer (Row Level Security on ~44 tables, migrations 025/030/031/033)
@@ -218,7 +229,12 @@ otify() where a human waits)./api/* returns machine 401 {ok:false}; pages redire
   connection has `rolbypassrls = true`, which overrides `FORCE ROW LEVEL
   SECURITY` -- so anything running on `DATABASE_URL` is invisible to RLS.
   `GET /api/health` reports `isolation.effective` as the single source of
-  truth. Full procedure: `docs/rls-rollout-runbook.md`.
+  truth. Full procedure: `docs/rls-rollout-runbook.md`. Migration 065 closed the
+  gap 031 had to skip: `department_memberships`, `event_registrations`,
+  `forum_votes`, `forum_flags`, `volunteer_signups`, `mentor_sessions`, and
+  `contest_submissions` now carry a backfilled `tenant_id` plus tenant-leading
+  indexes (RLS stays off by decision), so a future policy rollout has a column to
+  key on instead of a join upward.
 - The RLS flag is **operator-only**. `PATCH /api/admin/flags` rejects
   `tenant_rls_enforced` with `OPERATOR_ONLY` and `/admin/flags` renders it
   read-only, because it is global (not chapter-scoped) and one misclick would

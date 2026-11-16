@@ -1,6 +1,6 @@
-# L.O.O.M.
+# LOOM
 
-L.O.O.M. is a multi-tenant developer-growth platform for colleges. It helps students see their learning path, connect GitHub activity to progress, find resources, join contests, and receive mentorship while admins manage roadmaps, analytics, and institutional settings.
+LOOM is a multi-tenant developer-growth platform for colleges. It helps students see their learning path, connect GitHub activity to progress, find resources, join contests, and receive mentorship while admins manage roadmaps, analytics, and institutional settings.
 
 The project follows a documentation-first rule: product and architecture docs define the contracts before implementation expands them.
 
@@ -9,15 +9,15 @@ The project follows a documentation-first rule: product and architecture docs de
 This repository contains:
 
 - A complete documentation spine in `docs/`
-- A JavaScript Next.js App Router app with Supabase Auth (single `/login`, role-based landing: students → `/student`, leads → `/lead`, admins → `/admin`)
+- A JavaScript Next.js App Router app with Auth0 as the login front door and Supabase Auth as the legacy/E2E fallback (single `/login`, role-based landing: students → `/student`, leads → `/lead`, admins → `/admin`)
 - URL-addressable student workspace: Home, Learn (roadmap list/detail, resources list/detail), Build (projects list/new/detail, GitHub, open source), Prove (credentials/certificates, contests list/detail + register/submit, leaderboard), Connect (mentorship, community forums/wiki/snippets, events), Discover (people, network/chapters), insights, notifications, settings, privacy, public profile
 - URL-addressable lead console (`/lead`): roster, workshops, succession flags for `dept_lead` / `vertical_lead`
 - URL-addressable admin workspace: overview, students (+detail/scoped role assign/bulk), mentors, departments, roadmaps, resources, OSS, community, contests, events, projects, verification, analytics, finance, reports, handover, flags, FAQ, audit, settings
 - Public site: landing, `/about`, `/faq`, `/events`, `/domains`, `/domains/[slug]`
 - Tracked SQL migrations in `load/migrations/` applied via `node load/migrate.js`
-- Server-side auth library (`lib/auth-server.js`): session → profile → tenant → role, audit + notification helpers; RBAC matrix in `lib/permissions.js` (27 actions, 6 levels)
+- Server-side auth library (`lib/auth-server.js`): session → profile → tenant → role, audit + notification helpers; RBAC matrix in `lib/permissions.js` (29 actions, 6 levels)
 - Tenant resolution, API envelopes, raw-SQL data access (`lib/db.js`, pooler-safe), and HMAC-verified GitHub webhook processing (opt-in, paused by default)
-- Vitest (24 files, 172 cases) and Playwright (80 specs x chromium + mobile) coverage
+- Vitest unit/contract tests under `tests/` and Playwright E2E specs under `e2e/` (chromium + mobile projects). Counts drift; trust the runner output, not this line.
 
 ## Prerequisites
 
@@ -37,7 +37,7 @@ Then open `http://localhost:3000`.
 
 ### First-time setup
 
-1. Visit `/register` to create your Supabase Auth account
+1. Visit `/register` to create an account through Auth0 (the legacy Supabase form remains available)
 2. Sign in at `/login`, then visit `/setup` and click **Claim admin** (works only while no platform admin exists)
 3. Admins manage students/content at `/admin/*`; students work at `/student/*`
 
@@ -76,11 +76,33 @@ npx playwright test   # Playwright E2E (needs `npx playwright install chromium` 
 npm run dev           # Development server
 ```
 
+## Continuous integration
+
+Per-PR CI (`.github/workflows/ci.yml`) requires no application secrets and runs:
+
+- gitleaks secret scan (read-only, redacted)
+- lint + encoding/control-character check
+- Vitest unit tests
+- production build
+- migrations applied **twice** to a disposable `postgres:16` service, failing
+  unless the second pass applies zero files
+- schema/doc drift tests (migration numbering, documented files, doc truth)
+
+E2E is deliberately absent from per-PR CI. Run it locally against a production
+build before pushing (`E2E_PROD=1 npx playwright test`). There is no nightly
+workflow yet: adding one requires a **dedicated staging** Supabase project and
+`E2E_STAGING_*` secrets, and it must never point at production. See
+`docs/15-deploy-and-operations.md` section 4d.
+
+Dependabot opens monthly update PRs (npm and GitHub Actions). The per-PR CI
+runs the unit/build/migration gates; run `npm audit --audit-level=high` before a
+release. A separate dependency-review workflow is not present yet.
+
 ## Architecture
 
 ```
-Student → Supabase Auth → middleware → student layout → Next.js App → Supabase Postgres
-Admin   → Supabase Auth → middleware → admin layout (role check) → Next.js App → Supabase Postgres
+Student → Auth0 (Supabase Auth fallback) → middleware → student layout → Next.js App → Supabase Postgres
+Admin   → Auth0 (Supabase Auth fallback) → middleware → admin layout (role check) → Next.js App → Supabase Postgres
 GitHub  → Webhook (HMAC) → Route Handler → github_events → student_daily_activity
 ```
 
@@ -94,4 +116,4 @@ Start here:
 
 ## Design Principle
 
-L.O.O.M. should feel computationally simple even when the product is sophisticated. Students see progress, next step, action, and feedback. Admins see data, pattern, decision, and action. Infrastructure sees event, queue, aggregate, and cache.
+LOOM should feel computationally simple even when the product is sophisticated. Students see progress, next step, action, and feedback. Admins see data, pattern, decision, and action. Infrastructure sees event, queue, aggregate, and cache.

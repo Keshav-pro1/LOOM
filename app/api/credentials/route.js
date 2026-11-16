@@ -1,9 +1,10 @@
+import { scope } from "@/lib/tenant-scope";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit } from "@/lib/auth-server";
 import { signCredential } from "@/lib/credentials";
-import { env } from "@/lib/env";
+import { appBaseUrl, appUrl } from "@/lib/app-url";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 const issueSchema = z.object({
@@ -16,6 +17,7 @@ function titleFor(a) {
   if (a.source_type === "oss") return `Open source · ${a.source_ref}`;
   if (a.source_type === "contest") return `Contest · ${a.source_ref}`;
   if (a.source_type === "roadmap") return `Roadmap · ${a.source_ref}`;
+  if (a.source_type === "project") return `Verified project · ${a.source_ref}`;
   return "Achievement";
 }
 
@@ -32,16 +34,16 @@ export async function GET() {
     SELECT a.*, b.name AS badge_name, b.tier FROM student_achievements a
     LEFT JOIN skill_badges b ON b.id = a.badge_id
     WHERE a.student_id = ${user.id}
-      AND (a.tenant_id = ${tid}::uuid OR a.tenant_id IS NULL)
+      AND a.tenant_id = ${scope(tid)}::uuid
     ORDER BY a.earned_at DESC LIMIT 100
   `;
   const credentials = await sql`
     SELECT * FROM verifiable_credentials
     WHERE student_id = ${user.id}
-      AND (tenant_id = ${tid}::uuid OR tenant_id IS NULL)
+      AND tenant_id = ${scope(tid)}::uuid
     ORDER BY issued_at DESC LIMIT 100
   `;
-  return ok({ achievements, credentials, appUrl: env.NEXT_PUBLIC_APP_URL });
+  return ok({ achievements, credentials, appUrl: appBaseUrl() });
 }
 
 // Issue a signed share link for an achievement the student owns.
@@ -62,7 +64,7 @@ export async function POST(request) {
     SELECT a.*, b.name AS badge_name FROM student_achievements a
     LEFT JOIN skill_badges b ON b.id = a.badge_id
     WHERE a.id = ${body.achievementId} AND a.student_id = ${user.id}
-      AND (a.tenant_id = ${tenant?.id ?? null}::uuid OR a.tenant_id IS NULL)
+      AND a.tenant_id = ${scope(tenant?.id ?? null)}::uuid
     LIMIT 1
   `;
   if (!a) return fail("NOT_FOUND", "Achievement not found", 404);
@@ -81,5 +83,5 @@ export async function POST(request) {
     RETURNING *
   `;
   await writeAudit({ sql, actorId: user.id, tenantId: tenant?.id, action: "issued_credential", resource: "verifiable_credential", resourceId: cred.id, after: { achievementId: a.id } });
-  return ok({ credential: cred, url: `${env.NEXT_PUBLIC_APP_URL}/verify/credential/${id}` }, { status: 201 });
+  return ok({ credential: cred, url: appUrl(`/verify/credential/${id}`) }, { status: 201 });
 }

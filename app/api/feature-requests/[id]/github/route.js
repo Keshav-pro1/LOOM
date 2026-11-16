@@ -1,6 +1,8 @@
+import { scope } from "@/lib/tenant-scope";
 import { ok, fail } from "@/lib/api";
 import { getRequestContext, writeAudit } from "@/lib/auth-server";
 import { syncFeatureRequestToGitHub } from "@/lib/github-issues";
+import { appBaseUrl } from "@/lib/app-url";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 // POST /api/feature-requests/:id/github
@@ -23,7 +25,7 @@ export async function POST(request, { params }) {
     FROM feature_requests fr
     LEFT JOIN profiles p ON p.user_id = fr.requester_id
     WHERE fr.id = ${id}::uuid
-      AND (fr.tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL)
+      AND fr.tenant_id = ${scope(tenant?.id ?? null)}::uuid
     LIMIT 1
   `;
   if (!row) return fail("NOT_FOUND", "Not found", 404);
@@ -33,7 +35,7 @@ export async function POST(request, { params }) {
     row,
     tenantId: tenant?.id ?? null,
     tenantName: tenant?.name,
-    appUrl: process.env.NEXT_PUBLIC_APP_URL,
+    appUrl: appBaseUrl(),
   });
 
   if (result.ok) {

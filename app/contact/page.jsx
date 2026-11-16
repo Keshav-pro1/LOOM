@@ -2,46 +2,41 @@ import Link from "next/link";
 import { PublicInformationPage } from "@/components/landing/PublicInformationPage";
 import { JsonLd, webPageSchema } from "@/components/seo/JsonLd";
 import { canonicalFor } from "@/lib/seo";
+import { legalConfig } from "@/lib/legal";
 
-// Pure static legal/contact copy: no database, no tenant, no request input.
-// Safe to serve from the CDN cache. The tenant-scoped public pages (/events,
-// /domains, /faq, /about) MUST stay dynamic -- they resolve their chapter from
-// the Host header, and a shared cache keyed by path would serve one chapter's
-// content to another.
-export const dynamic = "force-static";
-export const revalidate = 86400;
+// This page has no database, tenant, or request input of its own, but it is
+// rendered per request: the nonce-based CSP in middleware.js only stamps the
+// inline bootstrap scripts on dynamically rendered HTML. Prerendering it would
+// ship scripts with no nonce, and the browser would block them.
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Contact",
   description:
-    "How to contact the L.O.O.M. chapter responsible for an account, privacy request, credential question, or safety report. Public contact details are pending publication.",
+    "How to contact the LOOM chapter responsible for an account, privacy request, credential question, or safety report.",
   ...canonicalFor("/contact"),
   openGraph: {
-    title: "Contact | L.O.O.M.",
-    description: "Contact the responsible L.O.O.M. chapter about accounts, privacy, credentials, or safety."
+    title: "Contact | LOOM",
+    description: "Contact the responsible LOOM chapter about accounts, privacy, credentials, or safety."
   }
 };
 
-const PLACEHOLDERS = {
-  contactName: "[CHAPTER_CONTACT_NAME]",
-  contactEmail: "[CHAPTER_CONTACT_EMAIL]",
-  published: "2026-10-15"
-};
-
 export default function ContactPage() {
+  const legal = legalConfig();
+
   return (
     <PublicInformationPage
       kicker="Contact"
       title="Contact the chapter."
-      lede="Use the responsible chapter contact for accounts, privacy requests, credential questions, safety reports, and legal notices. Public contact details are pending publication."
-      published={PLACEHOLDERS.published}
+      lede="Use the responsible chapter contact for accounts, privacy requests, credential questions, safety reports, and legal notices."
+      published={legal.published}
       sections={[{"id": "responsible-contact", "title": "Responsible contact"}, {"id": "what-to-include", "title": "What to include"}, {"id": "urgent-safety-matters", "title": "Urgent safety matters"}]}
     >
       <JsonLd
         data={webPageSchema({
           name: "Contact",
           path: "/contact",
-          description: "Contact the responsible L.O.O.M. chapter about accounts, privacy, credentials, or safety."
+          description: "Contact the responsible LOOM chapter about accounts, privacy, credentials, or safety."
         })}
       />
 
@@ -50,12 +45,12 @@ export default function ContactPage() {
           Responsible contact
         </h2>
         <p className="mt-3 text-sm leading-7" style={{ color: "var(--text-muted)" }}>
-          {PLACEHOLDERS.contactName} · {PLACEHOLDERS.contactEmail}
+          {legal.contactName}
+          {legal.contactEmail ? ` · ${legal.contactEmail}` : ""}
         </p>
         <p className="mt-3 text-sm leading-7" style={{ color: "var(--text-muted)" }}>
-          The chapter has not yet published its public contact name and address on this page. The placeholders above
-          must be replaced before this page is treated as operational. Signed-in members can also use their chapter’s
-          published community and notification channels.
+          Signed-in members can also use their chapter&apos;s published community and notification channels.
+          Operators can set <code>LEGAL_CONTACT_NAME</code> and <code>LEGAL_CONTACT_EMAIL</code> at deploy time.
         </p>
 
         <h2 id="what-to-include" className="font-display mt-10 text-2xl font-medium sm:text-3xl" style={{ color: "var(--text)" }}>

@@ -1,4 +1,5 @@
 const { test, expect } = require("@playwright/test");
+const { AUTH_STATE_FILE, hasAuthState } = require("./auth-state");
 
 // Authenticated STUDENT audit. Every other spec in this repo is unauthenticated
 // (route protection only), so the student surface had no runtime coverage at
@@ -28,6 +29,8 @@ const PEER = "gameryash";
 const STATIC_ROUTES = [
   "/student",
   "/student/roadmap",
+  "/student/practice",
+  "/student/practice/leaderboard",
   "/student/resources",
   "/student/projects",
   "/student/projects/new",
@@ -69,42 +72,17 @@ const REDIRECT_ROUTES = [
   "/student/privacy",
 ];
 
-// One sign-in, reused across every test in the worker.
-let statePromise;
-function signedInState(browser) {
-  if (!statePromise) {
-    statePromise = (async () => {
-      const ctx = await browser.newContext();
-      const page = await ctx.newPage();
-      await page.goto("/login");
-      await page.fill("#email", EMAIL);
-      await page.fill("#password", PASSWORD);
-      await page.click('button[type="submit"]');
-      await page.waitForURL((u) => !u.pathname.includes("/login"), { timeout: 30_000 });
-      await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
-      // Capture the state only after an authenticated API call succeeds. The
-      // first dashboard render fires /api/profile and /api/notifications from
-      // the client; if those race the cookie write they log 401s and the route
-      // audit reports a false failure.
-      //
-      // Mirror the browser exactly: run the probe inside the page. The session
-      // cookie is `Secure` in a production build, and Playwright's
-      // APIRequestContext refuses to send Secure cookies over the suite's HTTP
-      // origin, so `page.request.get()` returns 401 even though the browser is
-      // authenticated. That was a fixture false negative, not an auth bug.
-      const probeStatus = await page.evaluate(() => fetch("/api/profile").then((r) => r.status));
-      expect(probeStatus, "session is usable after sign-in").toBe(200);
-      const state = await ctx.storageState();
-      await ctx.close();
-      return state;
-    })();
-  }
-  return statePromise;
-}
+// One sign-in, shared across the whole suite. The `setup` project
+// (e2e/auth.setup.js) performs it and saves the session; signing in per test
+// file, per project, is what used to exhaust the login rate limit and fail
+// whichever spec ran ninth. See e2e/auth-state.js.
+test.use({ storageState: hasAuthState() ? AUTH_STATE_FILE : undefined });
 
-test.beforeEach(async ({ context, browser }) => {
-  const state = await signedInState(browser);
-  if (state.cookies?.length) await context.addCookies(state.cookies);
+test("workspace owns the top chrome", async ({ page }) => {
+  await page.goto("/student");
+  await expect(page.locator(".site-nav")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Workspace", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector(".site-content")).paddingTop))).toBe(0);
 });
 
 // Visit a route and collect everything a student would judge it by: HTTP
@@ -163,6 +141,22 @@ test("every static student route loads with no console errors", async ({ page })
   for (const path of STATIC_ROUTES) {
     const r = await visit(page, path);
     assertClean(path, r);
+  }
+});
+
+test("first-week journey and practice room show real account state", async ({ page }) => {
+  await page.goto("/student", { waitUntil: "domcontentloaded" });
+  const journey = page.getByRole("region", { name: "Your first week" });
+  await expect(journey).toBeVisible();
+  await expect(journey.getByText("Set your direction").first()).toBeVisible();
+  await expect(journey.getByText("Finish your first milestone").first()).toBeVisible();
+  await expect(journey.getByText("Connect GitHub").first()).toBeVisible();
+  await expect(journey.getByText("Put a project on the board").first()).toBeVisible();
+
+  await page.goto("/student/practice", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Your practice record")).toBeVisible();
+  if (await page.getByText("Starter practice").count()) {
+    await expect(page.getByText("not scored")).toBeVisible();
   }
 });
 

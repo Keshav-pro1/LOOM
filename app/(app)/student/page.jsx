@@ -1,8 +1,12 @@
+import { scope } from "@/lib/tenant-scope";
 import { getRequestContext } from "@/lib/auth-server";
 import { getSql } from "@/lib/db";
 import { resolveRequestTenant } from "@/lib/tenant";
 import { eligibilityFor } from "@/lib/mentorship";
-import { dayKey, toIsoDay } from "@/lib/github-activity";
+import { nextStepForStudent } from "@/lib/roadmap-next";
+import { splitVerifiedProgress } from "@/lib/roadmap";
+import { summarizeWeek } from "@/lib/week-activity";
+import { relDay, relShort } from "@/lib/dates";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { StudentDashboard } from "@/app/(app)/student/_components/StudentDashboard";
@@ -33,78 +37,95 @@ export default async function StudentPage() {
   `;
 
   const done = await sql`
-    SELECT node_id FROM student_roadmap_progress
+    SELECT node_id, evidence_state FROM student_roadmap_progress
     WHERE student_id = ${user?.id ?? ""} AND status = 'completed'
   `;
-  const doneIds = done.map((r) => r.node_id);
-  const doneCount = doneIds.length;
+  // A claim is visible in the UI, but it is not progress and it is not proof.
+  // Only lead-confirmed evidence moves the percentage or the proof rail.
+  const progress = splitVerifiedProgress(done);
+  const verifiedIds = progress.verifiedIds;
+  const provisionalCount = progress.provisionalIds.length;
+  const doneCount = verifiedIds.length;
   const totalCount = nodes.length;
   const overallPercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
-  const nextNode = nodes.find((n) => !doneIds.includes(n.id)) ?? null;
+  // One source of truth: the same prerequisite-aware, verified-only walk the
+  // roadmap page and the API use. The old `find(first uncompleted)` ignored
+  // both prerequisites and the student's domain.
+  const nextStep = user?.id
+    ? await nextStepForStudent(sql, user.id, profile?.primary_domain || null)
+    : { node: null };
+  const nextNode = nextStep.node;
   const nextMilestone = nextNode?.title ?? null;
 
-  // This week: Monday–Sunday strip from real daily activity.
+  // This week: one Monday–Sunday strip from real daily activity. The helper
+  // owns the window so the marks and the "sessions" total can never disagree
+  // (the old query fetched 13 days and counted every active day as this week).
+  const now = new Date();
   const weekRows = await sql`
     SELECT to_char(day, 'YYYY-MM-DD') AS day, commits, pull_requests, reviews FROM student_daily_activity
-    WHERE student_id = ${user?.id ?? ""} AND day >= CURRENT_DATE - INTERVAL '13 days'
+    WHERE student_id = ${user?.id ?? ""} AND day >= CURRENT_DATE - INTERVAL '6 days'
     ORDER BY day ASC
   `;
-  const byDay = new Map(weekRows.map((r) => [dayKey(r), r]));
-  const now = new Date();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
-  const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const weekDays = dayNames.map((label, i) => {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    const iso = toIsoDay(d);
-    const r = byDay.get(iso);
-    const hit = !!r && (r.commits || 0) + (r.pull_requests || 0) + (r.reviews || 0) > 0;
-    return { label, hit, today: iso === toIsoDay(now) };
-  });
-  const weekHits = weekRows.filter((r) => (r.commits || 0) + (r.pull_requests || 0) + (r.reviews || 0) > 0);
-  const weekSessions = new Set(weekHits.map((r) => dayKey(r))).size;
-  const weekContributions = weekHits.reduce((s, r) => s + (r.commits || 0) + (r.pull_requests || 0) + (r.reviews || 0), 0);
+  const week = summarizeWeek(weekRows, now);
+  const weekDays = week.days;
+  const weekSessions = week.sessions;
+  const weekContributions = week.contributions;
   const [weekMilestones] = await sql`
     SELECT COUNT(*)::int AS c FROM student_roadmap_progress
     WHERE student_id = ${user?.id ?? ""} AND status = 'completed'
-      AND completed_at >= CURRENT_DATE - INTERVAL '7 days'
+      AND evidence_state = 'verified'
+      AND completed_at >= ${week.start}::date
   `;
 
   // Coming up: open contests, upcoming events, scheduled mentor sessions.
-  const contests = await sql`
+  //
+  // The "when" label is computed here, on the server, and passed down as a
+  // string. Formatting it inside the dashboard (a client component, so it also
+  // renders during hydration) is a hydration mismatch waiting to happen: the
+  // Node process and the browser can be on different calendar dates, so
+  // "Today"/"Tomorrow" and even "5 Dec" can disagree between the two renders.
+  // See lib/dates.js.
+  const contests = (
+    await sql`
     SELECT c.id, c.title, c.status, c.starts_at, c.ends_at,
       EXISTS(SELECT 1 FROM contest_registrations r WHERE r.contest_id = c.id AND r.student_id = ${user?.id ?? ""}) AS registered
     FROM contests c
-    WHERE c.status IN ('open', 'upcoming', 'published')
+    WHERE c.tenant_id = ${tenant?.id ?? null}::uuid
+      AND c.status IN ('open', 'upcoming', 'published')
     ORDER BY c.starts_at ASC NULLS LAST LIMIT 3
-  `;
-  const events = await sql`
+  `
+  ).map((c) => ({ ...c, when: relDay(c.ends_at || c.starts_at) }));
+  const events = (
+    await sql`
     SELECT e.id, e.title, e.event_type, e.starts_at, e.location, e.is_online,
       EXISTS(SELECT 1 FROM event_registrations r WHERE r.event_id = e.id AND r.student_id = ${user?.id ?? ""}) AS registered
     FROM events e
     WHERE e.tenant_id = ${tenant?.id ?? null}::uuid AND e.status IN ('upcoming', 'live')
       AND e.starts_at >= NOW() - INTERVAL '2 hours'
     ORDER BY e.starts_at ASC LIMIT 3
-  `;
-  const sessions = await sql`
+  `
+  ).map((e) => ({ ...e, when: relDay(e.starts_at) }));
+  const sessions = (
+    await sql`
     SELECT s.id, s.scheduled_at, s.status, m.expertise, p.name AS mentor_name
     FROM mentor_sessions s
     LEFT JOIN mentors m ON m.user_id = s.mentor_id
     LEFT JOIN profiles p ON p.user_id = s.mentor_id
     WHERE s.student_id = ${user?.id ?? ""} AND s.scheduled_at >= NOW() - INTERVAL '2 hours'
     ORDER BY s.scheduled_at ASC LIMIT 2
-  `;
+  `
+  ).map((s) => ({ ...s, when: relDay(s.scheduled_at) }));
 
-  // Recent proof: completions, verified OSS, projects.
+  // Recent work. A roadmap tick is a claim until a lead verifies the evidence,
+  // so each row carries its real state and the UI labels it honestly.
   const recentNodes = await sql`
-    SELECT r.completed_at, n.title FROM student_roadmap_progress r
+    SELECT r.completed_at, r.evidence_state, n.title FROM student_roadmap_progress r
     JOIN roadmap_nodes n ON n.id = r.node_id
     WHERE r.student_id = ${user?.id ?? ""} AND r.status = 'completed'
     ORDER BY r.completed_at DESC NULLS LAST LIMIT 3
   `;
   const recentOss = await sql`
-    SELECT pr_url, title, verified_at, status FROM student_oss_contributions
+    SELECT pr_url, title, verified_at, status, created_at FROM student_oss_contributions
     WHERE student_id = ${user?.id ?? ""}
     ORDER BY created_at DESC LIMIT 2
   `;
@@ -114,25 +135,36 @@ export default async function StudentPage() {
     ORDER BY created_at DESC LIMIT 3
   `;
   const proof = [
-    ...recentNodes.map((r) => ({
+    ...recentNodes.filter((r) => r.evidence_state === "verified").map((r) => ({
+      at: r.completed_at,
+      when: r.completed_at ? new Date(r.completed_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" }) : "Recent",
       text: `completed ${r.title}`,
-      meta: r.completed_at ? new Date(r.completed_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" }) + " · roadmap" : "roadmap",
-      href: "/student/roadmap",
-      hot: true
+      meta: "Roadmap",
+      state: "verified",
+      href: "/student/roadmap"
     })),
-    ...recentOss.map((o) => ({
-      text: o.status === "merged" || o.verified_at ? `merged ${o.title || "a pull request"}` : `claimed ${o.title || "a pull request"}`,
-      meta: "open source",
-      href: o.pr_url || "/student/opensource",
-      hot: !!(o.verified_at || o.status === "merged")
-    })),
+    ...recentOss.map((o) => {
+      const verified = !!(o.verified_at || o.status === "merged");
+      return {
+        at: o.verified_at || o.created_at,
+        when: new Date(o.verified_at || o.created_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" }),
+        text: verified ? `merged ${o.title || "a pull request"}` : `claimed ${o.title || "a pull request"}`,
+        meta: "Open source",
+        state: verified ? "verified" : "pending",
+        href: o.pr_url || "/student/opensource"
+      };
+    }),
     ...recentProjects.map((p) => ({
+      at: p.created_at,
+      when: p.created_at ? new Date(p.created_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" }) : "Recent",
       text: `published ${p.title}`,
-      meta: "project",
-      href: `/student/projects/${p.id}`,
-      hot: false
+      meta: "Project",
+      state: "self-reported",
+      href: `/student/projects/${p.id}`
     }))
-  ].slice(0, 5);
+  ].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
+    .slice(0, 5)
+    .map(({ at, ...item }) => item);
 
   // Notifications preview: unread first, then newest. Mark-read stays in the
   // inbox drawer + notifications page — home only links.
@@ -183,7 +215,10 @@ export default async function StudentPage() {
     SELECT status, created_at FROM mentor_applications WHERE student_id = ${user.id}
     ORDER BY created_at DESC LIMIT 1
   ` : [];
-  const myProjects = await sql`SELECT COUNT(*)::int AS c FROM projects WHERE owner_id = ${user?.id ?? ""}`;
+  const [myProjects] = await sql`SELECT COUNT(*)::int AS c FROM projects WHERE owner_id = ${user?.id ?? ""}`;
+  const [githubConnection] = await sql`
+    SELECT 1 AS linked FROM github_connections WHERE user_id = ${user?.id ?? ""} LIMIT 1
+  `;
   const [mySolutions] = await sql`
     SELECT COUNT(*)::int AS c FROM forum_replies
     WHERE author_id = ${user?.id ?? ""} AND is_answer = true AND status = 'visible'
@@ -208,11 +243,11 @@ export default async function StudentPage() {
   `;
   const [openContests] = await sql`
     SELECT COUNT(*)::int AS c FROM contests
-    WHERE status IN ('open', 'published') AND (tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL)
+    WHERE status IN ('open', 'published') AND tenant_id = ${scope(tenant?.id ?? null)}::uuid
   `;
   const [mentorCount] = await sql`
     SELECT COUNT(*)::int AS c FROM mentors
-    WHERE available = true AND (tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL)
+    WHERE available = true AND tenant_id = ${scope(tenant?.id ?? null)}::uuid
   `;
   const [talkCount] = await sql`
     SELECT COUNT(*)::int AS c FROM events
@@ -224,7 +259,9 @@ export default async function StudentPage() {
     WHERE is_curated = true AND (tenant_id IS NULL OR tenant_id = ${tenant?.id ?? null}::uuid)
   `;
   const cadence = {
-    workshop: nextWorkshop ? { title: nextWorkshop.title, when: nextWorkshop.starts_at } : null,
+    // `when` is already the rendered label: see the note above the upcoming-event
+  // queries about why a relative date must not be formatted during hydration.
+  workshop: nextWorkshop ? { title: nextWorkshop.title, when: relShort(nextWorkshop.starts_at) } : null,
     contests: openContests?.c ?? 0,
     mentors: mentorCount?.c ?? 0,
     projects: myProjects[0]?.c ?? 0,
@@ -268,7 +305,8 @@ export default async function StudentPage() {
         todayLabel={todayLabel}
         nextNode={nextNode}
         nodes={nodes.map((n) => ({ id: n.id, title: n.title }))}
-        doneIds={doneIds}
+        verifiedIds={verifiedIds}
+        provisionalCount={provisionalCount}
         overallPercent={overallPercent}
         nextMilestone={nextMilestone}
         weekDays={weekDays}
@@ -281,6 +319,7 @@ export default async function StudentPage() {
         notifUnread={notifUnread?.c ?? 0}
         projectsPreview={recentProjects}
         projectCount={myProjects[0]?.c ?? 0}
+        githubConnected={Boolean(githubConnection)}
         achievementsPreview={achievementsPreview}
         achievementCount={achievementCount?.c ?? 0}
         credentialCount={credentialCount?.c ?? 0}

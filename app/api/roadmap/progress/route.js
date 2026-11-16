@@ -2,9 +2,13 @@ import { z } from "zod";
 import { revalidateTag } from "next/cache";
 import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit, notify } from "@/lib/auth-server";
-import { milestoneFor } from "@/lib/mentorship";
-import { unmetPrerequisites } from "@/lib/ranking";
+import { earnedMilestoneKeys, milestoneFor } from "@/lib/mentorship";
+import { recomputeScore, revokeEvidence, unmetPrerequisites } from "@/lib/ranking";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { isOptionalHttpUrl, HTTP_URL_MESSAGE } from "@/lib/content-safety";
+import { createLogger, requestIdFrom } from "@/lib/log";
+
+const baseLog = createLogger("roadmap-progress");
 
 const progressSchema = z.object({
   nodeId: z.string().min(1),
@@ -12,11 +16,12 @@ const progressSchema = z.object({
   // Evidence is what separates a claim from a record. Both are optional in the
   // schema because "completed" without evidence is still a legal claim — it
   // just stays provisional and scores nothing.
-  evidenceUrl: z.string().url().max(500).nullable().optional(),
+  evidenceUrl: z.string().max(500).nullable().optional().refine(isOptionalHttpUrl, HTTP_URL_MESSAGE),
   evidenceNote: z.string().min(20).max(500).nullable().optional()
 });
 
 export async function POST(request) {
+  const log = baseLog.child({ requestId: requestIdFrom(request) });
   const ctx = await getRequestContext();
   if (ctx.error === "UNAUTHORIZED") return fail("UNAUTHORIZED", "Authentication required", 401);
   if (ctx.error) return fail(ctx.error, "Profile not found", 404);
@@ -56,9 +61,15 @@ export async function POST(request) {
   // "forbidden" — a student who worked ahead of the graph, or forgot one node,
   // should be able to fix it without guessing.
   if (completing) {
-    const [completed] = await sql`
+    // Only verified evidence clears a prerequisite. A provisional claim is
+    // visible to the student but must not unlock the next milestone, otherwise
+    // the gate can be walked by clicking through the whole graph.
+    const completed = await sql`
       SELECT node_id FROM student_roadmap_progress
-      WHERE student_id = ${user.id} AND status = 'completed'
+      WHERE student_id = ${user.id}
+        AND tenant_id = ${tenant.id}::uuid
+        AND status = 'completed'
+        AND evidence_state = 'verified'
     `;
     const [{ edges }] = await sql`
       SELECT COALESCE(jsonb_agg(jsonb_build_object('from_id', from_id, 'to_id', to_id, 'kind', kind)), '[]'::jsonb) AS edges
@@ -83,6 +94,17 @@ export async function POST(request) {
       );
     }
   }
+
+  // Read the old state before the upsert. A lead-confirmed node that the
+  // student edits or reopens is no longer proven, so its ledger row has to be
+  // withdrawn; the previous code downgraded the label but left the score.
+  const [previous] = await sql`
+    SELECT evidence_state FROM student_roadmap_progress
+    WHERE student_id = ${user.id}
+      AND node_id = ${body.nodeId}
+      AND tenant_id = ${tenant.id}::uuid
+    LIMIT 1
+  `;
 
   const completedAt = completing ? new Date().toISOString() : null;
   const evidenceState = completing ? "provisional" : null;
@@ -109,6 +131,22 @@ export async function POST(request) {
       evidence_source = CASE WHEN EXCLUDED.status = 'completed' THEN 'student_claim' ELSE NULL END
     RETURNING *
   `;
+
+  if (previous?.evidence_state === "verified") {
+    await revokeEvidence({
+      sql,
+      tenantId: tenant.id,
+      userId: user.id,
+      kind: "roadmap_done",
+      refId: body.nodeId
+    });
+    // Milestones are derived from the verified count, but the achievement row
+    // was written once and never revisited. Withdrawing a verified node must
+    // withdraw any milestone the new count no longer supports (credentials
+    // cascade from the achievement row).
+    await revokeUnearnedMilestones({ sql, studentId: user.id, tenantId: tenant.id });
+    await recomputeScore(sql, tenant.id, user.id);
+  }
 
   await writeAudit({
     sql, actorId: user.id, tenantId: tenant?.id,
@@ -149,7 +187,10 @@ export async function POST(request) {
           ON CONFLICT (tenant_id, user_id, kind, ref_id) DO UPDATE SET failures_count = help_signals.failures_count + 1, last_failed_at=now(), updated_at=now()
         `;
       }
-    } catch {}
+    } catch (err) {
+      // Advisory struggle signal only; the progress write already succeeded.
+      log.warn("help signal upsert failed; progress still saved", { userId: user.id, nodeId: body.nodeId, err });
+    }
   }
 
   return ok({ progress: row, studentId: user.id, role: profile.role, milestone });
@@ -174,13 +215,44 @@ async function notifyLeadsOfReview({ sql, tenantId, studentId, nodeTitle }) {
        WHERE p.tenant_id = ${tenantId}::uuid
          AND p.role IN ('dept_lead', 'vertical_lead', 'admin', 'platform_admin')
     `;
-  } catch {
+  } catch (err) {
     /* never fail a student's progress update because staff could not be told */
+    log.warn("lead review notification failed", { tenantId, studentId, err });
   }
 }
 
 // Milestones turn sustained motion into chapter achievements — the same
 // evidence trail credentials are built from. Idempotent per milestone key.
+async function revokeUnearnedMilestones({ sql, studentId, tenantId }) {
+  const [{ nodes = 0 } = {}] = await sql`SELECT COUNT(*)::int AS nodes FROM roadmap_nodes`;
+  const [{ done = 0 } = {}] = await sql`
+    SELECT COUNT(*)::int AS done
+      FROM student_roadmap_progress
+     WHERE student_id = ${studentId}
+       AND tenant_id = ${tenantId}::uuid
+       AND status = 'completed'
+       AND evidence_state = 'verified'
+  `;
+  const keep = earnedMilestoneKeys(done, nodes);
+  if (keep.length) {
+    return sql`
+      DELETE FROM student_achievements
+       WHERE student_id = ${studentId}
+         AND tenant_id = ${tenantId}::uuid
+         AND source_type = 'roadmap'
+         AND NOT (source_ref = ANY(${keep}))
+      RETURNING id, source_ref
+    `;
+  }
+  return sql`
+    DELETE FROM student_achievements
+     WHERE student_id = ${studentId}
+       AND tenant_id = ${tenantId}::uuid
+       AND source_type = 'roadmap'
+    RETURNING id, source_ref
+  `;
+}
+
 async function maybeAwardMilestone({ sql, studentId, tenantId }) {
   const [{ nodes = 0 } = {}] = await sql`SELECT COUNT(*)::int AS nodes FROM roadmap_nodes`;
   if (!nodes) return null;

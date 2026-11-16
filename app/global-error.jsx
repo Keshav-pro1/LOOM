@@ -39,7 +39,7 @@ export default function GlobalError({ error, reset }) {
               margin: 0
             }}
           >
-            L.O.O.M.
+            LOOM
           </p>
           <h1 style={{ fontSize: "1.75rem", margin: "1rem 0 0.5rem", fontWeight: 700 }}>
             Something broke on our side
@@ -63,6 +63,7 @@ export default function GlobalError({ error, reset }) {
             >
               Try again
             </button>
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- global-error renders outside the router shell, where next/link is not available; a raw anchor is the only safe way home */}
             <a
               href="/"
               style={{

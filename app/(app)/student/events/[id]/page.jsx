@@ -4,8 +4,10 @@ import { getRequestContext } from "@/lib/auth-server";
 import { isAdmin } from "@/lib/permissions";
 import { AppShell } from "@/components/AppShell";
 import { Display, Meta, StatusPill, ActionLink } from "@/components/loom/primitives";
-import { env } from "@/lib/env";
-import { RegisterButton, FeedbackForm, MaterialForm, CheckInForm } from "../EventsBits";
+import { appBaseUrl } from "@/lib/app-url";
+import { RegisterButton, FeedbackForm, MaterialForm } from "../EventsBits";
+import { EventCheckIn } from "@/components/events/EventCheckIn";
+import { EventVolunteerSignup } from "@/components/events/EventVolunteerSignup";
 import { displayState, isFull, nextStepFor, TYPE_LABEL, HISTORY_STATUSES } from "@/lib/events";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +15,7 @@ export const dynamic = "force-dynamic";
 function gcalUrl(e) {
   const fmt = (d) => new Date(d).toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
   const dates = e.ends_at ? `${fmt(e.starts_at)}/${fmt(e.ends_at)}` : `${fmt(e.starts_at)}/${fmt(e.starts_at)}`;
-  const p = new URLSearchParams({ action: "TEMPLATE", text: e.title, dates, details: `${e.description || ""}\n${env.NEXT_PUBLIC_APP_URL}/student/events/${e.id}` });
+  const p = new URLSearchParams({ action: "TEMPLATE", text: e.title, dates, details: `${e.description || ""}\n${appBaseUrl()}/student/events/${e.id}` });
   if (e.location) p.set("location", e.location);
   return `https://calendar.google.com/calendar/render?${p.toString()}`;
 }
@@ -49,6 +51,17 @@ export default async function EventDetailPage({ params }) {
     WHERE r.event_id = ${id} ORDER BY r.registered_at ASC LIMIT 200
   ` : [];
   const [cert] = mine ? await sql`SELECT * FROM certificates WHERE event_id = ${id} AND student_id = ${user.id} LIMIT 1` : [];
+  const volunteerSlots = await sql`
+    SELECT s.*,
+      (SELECT COUNT(*)::int FROM volunteer_signups v WHERE v.slot_id = s.id) AS signup_count,
+      EXISTS (
+        SELECT 1 FROM volunteer_signups v
+        WHERE v.slot_id = s.id AND v.user_id = ${user.id}
+      ) AS signed_up
+    FROM volunteer_slots s
+    WHERE s.event_id = ${id} AND s.tenant_id = ${tenant?.id ?? null}::uuid
+    ORDER BY s.created_at ASC
+  `;
 
   const registered = !!mine && mine.status !== "cancelled";
   const state = displayState(event, mine);
@@ -114,6 +127,13 @@ export default async function EventDetailPage({ params }) {
           </section>
         )}
 
+        {!past && (
+          <EventVolunteerSignup
+            slots={volunteerSlots}
+            canVolunteer={!past}
+          />
+        )}
+
         {step && !past && (
           <section className="mt-8" aria-label="Next step">
             <Meta>Next step</Meta>
@@ -148,7 +168,7 @@ export default async function EventDetailPage({ params }) {
         {admin && (
           <section className="mt-10 border-t pt-6" style={{ borderColor: "var(--line)" }} aria-label="Check-in">
             <Meta>Door check-in · {attendees.filter((a) => a.status === "attended").length}/{attendees.length} attended</Meta>
-            <div className="mt-3"><CheckInForm eventId={event.id} /></div>
+            <div className="mt-3"><EventCheckIn eventId={event.id} /></div>
             <ul className="mt-3 max-h-64 space-y-1 overflow-auto text-sm">
               {attendees.map((a) => (
                 <li key={a.id} className="flex justify-between gap-2">

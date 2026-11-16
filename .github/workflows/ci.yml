@@ -4,21 +4,44 @@ name: CI
 # manual-only: nothing in the repo ran them on push, so a regression could merge
 # and sit undetected until the next human session.
 #
-# The unit and lint jobs need no secrets. The E2E job DOES need Supabase env
-# vars because pages and APIs read real rows (there is no mock data layer), so it
-# is gated behind repository secrets. If they are absent the E2E job is skipped
-# rather than failing the whole pipeline on a fork.
+# E2E is intentionally not run here: it needs real Supabase/Auth0 env vars and a
+# seeded database, which this workflow does not have. Run it locally per AGENTS.md
+# §5 before pushing.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    # Read-only: the scanner only needs the checked-out files. No GITHUB_TOKEN,
+    # no write scopes, no org licence secret required (see note below).
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # gitleaks/gitleaks-action v2 is EOL on GitHub-hosted runners (Node 20 is
+      # removed in Sept 2026) and needs a paid/free org licence key. Use the
+      # official pinned gitleaks image instead: same engine, no licence, no
+      # third-party action surface. `--redact` keeps secret values out of logs;
+      # findings still name the rule, file, and line.
+      - name: Run gitleaks
+        run: >-
+          docker run --rm
+          -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.30.1
+          dir /repo --redact --verbose --no-banner --exit-code 1
+
   lint:
     name: Lint + encoding
     runs-on: ubuntu-latest
@@ -63,12 +86,24 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-  e2e:
-    name: E2E (chromium + mobile)
+  migrations:
+    name: Migrations (apply twice)
     runs-on: ubuntu-latest
-    # Skipped, not failed, when the database secrets are unavailable — so a fork
-    # or a new contributor still gets lint/test/build signal.
-    if: ${{ github.event_name == 'push' || secrets.DATABASE_URL != '' }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: loom_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/loom_ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -76,28 +111,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - name: Write env from secrets
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_APP_URL: ${{ secrets.DATABASE_APP_URL }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL || 'http://127.0.0.1:3000' }}
-          DEV_TENANT_SLUG: ${{ vars.DEV_TENANT_SLUG || 'demo-college' }}
+      # The base schema revokes from Supabase's roles, so they must exist even
+      # on a plain Postgres service container.
+      - name: Create Supabase-compatible roles
         run: |
-          {
-            echo "DATABASE_URL=$DATABASE_URL"
-            echo "DATABASE_APP_URL=$DATABASE_APP_URL"
-            echo "NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL"
-            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY"
-            echo "NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL"
-            echo "DEV_TENANT_SLUG=$DEV_TENANT_SLUG"
-          } > .env.local
-      - run: npx playwright test --reporter=line
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-report
-          path: playwright-report/
-          retention-days: 7
+          node -e "const p=require('postgres');const s=p(process.env.DATABASE_URL,{max:1});(async()=>{await s\`CREATE ROLE anon NOLOGIN\`;await s\`CREATE ROLE authenticated NOLOGIN\`;await s.end()})()"
+      - name: Apply migrations
+        run: node load/migrate.js | tee /tmp/first.log
+      - name: Apply migrations again
+        run: |
+          node load/migrate.js | tee /tmp/second.log
+          grep -q "0 applied" /tmp/second.log

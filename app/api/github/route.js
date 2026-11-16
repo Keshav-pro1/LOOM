@@ -2,7 +2,9 @@ import { z } from "zod";
 import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit } from "@/lib/auth-server";
 import { isGithubEnabled } from "@/lib/github";
-import { cryptoConfigured } from "@/lib/crypto";
+import { cryptoConfigured, open } from "@/lib/crypto";
+import { removeWebhook } from "@/lib/github-oauth";
+import { appBaseUrl } from "@/lib/app-url";
 import { env } from "@/lib/env";
 
 export async function GET() {
@@ -117,7 +119,7 @@ export async function POST(request) {
   });
 
   // Point them at the real flow instead of erroring into a dead end.
-  const start = new URL("/api/github/oauth/start", env.NEXT_PUBLIC_APP_URL);
+  const start = new URL("/api/github/oauth/start", appBaseUrl());
   return fail(
     "USE_OAUTH",
     "Linking is done through GitHub so your identity can be verified. Opening the GitHub authorization page…",
@@ -133,36 +135,95 @@ export async function DELETE() {
   if (ctx.error === "UNAUTHORIZED") return fail("UNAUTHORIZED", "Authentication required", 401);
   if (ctx.error) return fail(ctx.error, "Profile not found", 404);
   const { user, tenant, sql } = ctx;
+  const tid = tenant?.id ?? null;
+  if (!tid) return fail("TENANT_UNRESOLVED", "Chapter not resolved", 404);
   const [before] = await sql`SELECT github_username FROM github_connections WHERE user_id = ${user.id} LIMIT 1`;
+
+  // Disconnecting must also stop future deliveries. This is best-effort: an
+  // expired token or lost repo admin cannot be allowed to strand the account in
+  // a linked state. Nothing here blocks the local revocation below.
+  const webhooks = [];
+  if (cryptoConfigured()) {
+    try {
+      const [conn] = await sql`
+        SELECT access_token_cipher FROM github_connections WHERE user_id = ${user.id} LIMIT 1
+      `;
+      if (conn?.access_token_cipher) {
+        const token = open(conn.access_token_cipher);
+        const grants = await sql`
+          SELECT repo_full_name FROM github_repo_grants WHERE user_id = ${user.id}
+        `;
+        const webhookUrl = `${appBaseUrl()}/api/github/webhook`;
+        for (const grant of grants) {
+          const result = await removeWebhook({ accessToken: token, fullName: grant.repo_full_name, webhookUrl });
+          if (!result.ok) webhooks.push({ repo: grant.repo_full_name, reason: result.reason });
+        }
+      }
+    } catch {
+      // Decryption/API failure is not a reason to leave the connection intact.
+      webhooks.push({ repo: null, reason: "REVOCATION_FAILED" });
+    }
+  }
 
   // Revoking access means the proofs derived from it must go too. Leaving
   // ranking_events rows behind would let a member hand their token to someone
   // else, unlink, and hand it back -- a laundering path that only exists because
   // the revocation did not cascade.
-  const revoked = await sql`
-    DELETE FROM ranking_events
-    WHERE tenant_id = ${tenant?.id ?? null}::uuid
-      AND user_id = ${user.id}
-      AND source = 'webhook'
-      AND verified_by LIKE 'github:%'
-    RETURNING ref_id
-  `;
-  const revokedCount = revoked.length;
+  // The proof, the connection, and the grant that produced it leave together.
+  // If the connection were deleted while the evidence survived (or the reverse),
+  // a failed request would leave a link the student cannot see and proof they no
+  // longer control.
+  const { revokedCount, downgraded } = await sql.begin(async (tx) => {
+    const revoked = await tx`
+      DELETE FROM ranking_events
+      WHERE tenant_id = ${tid}::uuid
+        AND user_id = ${user.id}
+        AND source = 'webhook'
+        AND verified_by LIKE 'github:%'
+      RETURNING ref_id
+    `;
 
-  await sql`DELETE FROM github_connections WHERE user_id = ${user.id}`;
-  await sql`DELETE FROM github_repo_grants WHERE user_id = ${user.id}`;
-  await sql`UPDATE profiles SET github_username = NULL WHERE user_id = ${user.id}`;
+    // A project verified by a repo grant is proof only while that grant exists.
+    // Unlink removes the grant, so the project must fall back to provisional;
+    // leaving the verified label would show a badge and a verified state that no
+    // score and no live grant support.
+    const downgradedRows = await tx`
+      UPDATE projects
+         SET evidence_state = 'provisional', verified_at = NULL, verified_by = NULL, updated_at = NOW()
+       WHERE owner_id = ${user.id}
+         AND tenant_id = ${tid}::uuid
+         AND evidence_state = 'verified'
+         AND verified_by LIKE 'github:%'
+      RETURNING id
+    `;
 
-  if (revokedCount) {
+    await tx`DELETE FROM github_connections WHERE user_id = ${user.id}`;
+    await tx`DELETE FROM github_repo_grants WHERE user_id = ${user.id}`;
+    await tx`UPDATE profiles SET github_username = NULL WHERE user_id = ${user.id}`;
+    return { revokedCount: revoked.length, downgraded: downgradedRows };
+  });
+
+  if (revokedCount || downgraded.length) {
     const { recomputeScore } = await import("@/lib/ranking");
-    await recomputeScore(sql, tenant?.id, user.id);
+    await recomputeScore(sql, tid, user.id);
   }
 
   await writeAudit({
-    sql, actorId: user.id, tenantId: tenant?.id,
+    sql, actorId: user.id, tenantId: tid,
     action: "unlinked_github", resource: "github_connection", resourceId: user.id,
     before: before ? { githubUsername: before.github_username } : null,
-    after: { connected: false, revokedEvidence: revokedCount }
+    after: {
+      connected: false,
+      revokedEvidence: revokedCount,
+      downgradedProjects: downgraded.length,
+      webhookRevocationFailures: webhooks.length
+    }
   });
-  return ok({ connected: false, githubUsername: null, revokedEvidence: revokedCount });
+  return ok({
+    connected: false,
+    githubUsername: null,
+    revokedEvidence: revokedCount,
+    downgradedProjects: downgraded.length,
+    webhookRevocationFailures: webhooks
+  });
 }

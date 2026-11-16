@@ -29,7 +29,6 @@ export function GithubTabs({ items, repos, daily = [] }) {
           type="button"
           role="tab"
           aria-selected={tab === "activity"}
-          aria-pressed={tab === "activity"}
           onClick={() => setTab("activity")}
         >
           Recent activity
@@ -38,7 +37,6 @@ export function GithubTabs({ items, repos, daily = [] }) {
           type="button"
           role="tab"
           aria-selected={tab === "daily"}
-          aria-pressed={tab === "daily"}
           onClick={() => setTab("daily")}
         >
           Daily log
@@ -47,7 +45,6 @@ export function GithubTabs({ items, repos, daily = [] }) {
           type="button"
           role="tab"
           aria-selected={tab === "repos"}
-          aria-pressed={tab === "repos"}
           onClick={() => setTab("repos")}
         >
           Repositories{repos.length > 0 ? ` · ${repos.length}` : ""}
@@ -160,12 +157,134 @@ export function GithubTabs({ items, repos, daily = [] }) {
   );
 }
 
+export function RepoVerifyPicker({ verified = [] }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState("idle");
+  const [repos, setRepos] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
+  const verifiedSet = new Set(verified.map((name) => String(name).toLowerCase()));
+
+  async function load() {
+    setState("loading");
+    setError("");
+    try {
+      const res = await fetch("/api/github/repos?page=1");
+      const data = await res.json();
+      if (!data?.ok) {
+        setState("error");
+        setError(
+          data?.error?.code === "GITHUB_RELINK_REQUIRED"
+            ? "Your GitHub connection needs to be renewed. Use “Verify with GitHub” above first."
+            : data?.error?.message || "Repositories could not be loaded."
+        );
+        return;
+      }
+      setRepos(data.data.repos || []);
+      setState("ready");
+    } catch {
+      setState("error");
+      setError("Network error while loading repositories.");
+    }
+  }
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && state === "idle") load();
+  }
+
+  function pick(fullName) {
+    setSelected((current) =>
+      current.includes(fullName)
+        ? current.filter((name) => name !== fullName)
+        : current.length >= 10
+          ? current
+          : [...current, fullName]
+    );
+  }
+
+  const visible = repos.filter((repo) => {
+    const q = query.trim().toLowerCase();
+    return !q || `${repo.fullName} ${repo.description || ""} ${repo.language || ""}`.toLowerCase().includes(q);
+  });
+
+  return (
+    <div>
+      <button type="button" onClick={toggle} className="btn-ghost !py-2 text-sm">
+        {open ? "Close repository picker" : "Verify repositories"}
+      </button>
+      {open && (
+        <div className="mt-3 rounded-2xl border p-4" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
+          {state === "loading" && <p className="narrative text-sm">Loading your repositories…</p>}
+          {state === "error" && (
+            <div>
+              <p className="text-sm" style={{ color: "var(--danger)" }}>{error}</p>
+              <button type="button" onClick={load} className="btn-ghost mt-3 !py-1.5 text-xs">Try again</button>
+            </div>
+          )}
+          {state === "ready" && (
+            <>
+              <label htmlFor="repo-verify-search" className="meta">Find a repository</label>
+              <input
+                id="repo-verify-search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search owner/repo"
+                className="mt-2 w-full rounded-[10px] border px-3 py-2 text-sm"
+                style={{ borderColor: "var(--line)", background: "var(--bg-muted)", color: "var(--text)" }}
+              />
+              <ul className="mt-3 max-h-72 divide-y overflow-y-auto" style={{ borderColor: "var(--line)" }}>
+                {visible.map((repo) => {
+                  const already = verifiedSet.has(repo.fullName.toLowerCase());
+                  return (
+                    <li key={repo.fullName}>
+                      <label className={`flex items-start gap-3 py-2.5 ${already ? "opacity-60" : "cursor-pointer"}`}>
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={already || selected.includes(repo.fullName)}
+                          disabled={already}
+                          onChange={() => pick(repo.fullName)}
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate font-mono text-sm font-semibold" style={{ color: "var(--text)" }}>
+                            {repo.fullName}
+                          </span>
+                          <span className="meta mt-0.5 block normal-case tracking-normal">
+                            {already ? "Already verified" : [repo.language, repo.isPrivate ? "Private" : null].filter(Boolean).join(" · ") || "Owned repository"}
+                          </span>
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+                {visible.length === 0 && <li className="narrative py-4 text-sm">No repositories match that search.</li>}
+              </ul>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <GithubLinkButton
+                  label={selected.length ? `Verify ${selected.length} selected` : "Verify repositories"}
+                  repos={selected}
+                  disabled={selected.length === 0}
+                />
+                <span className="meta normal-case tracking-normal">{selected.length}/10 selected</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ConnectionControls({
   username,
   exportData,
   identityVerified = false,
   oauthConfigured = true,
-  tokenStorageReady = true
+  tokenStorageReady = true,
+  renewNeeded = false
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -198,6 +317,27 @@ export function ConnectionControls({
 
   return (
     <div className="mt-5">
+      {renewNeeded && (
+        <div className="mb-4 rounded-xl border p-4" style={{ borderColor: "var(--danger)", background: "var(--bg-muted)" }}>
+          <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+            Your GitHub access needs renewing.
+          </p>
+          <p className="narrative mt-1">
+            Repository verification is paused because the stored token has expired. Renew access to load and confirm your repositories again.
+          </p>
+          <div className="mt-3">
+            {oauthConfigured ? (
+              <GithubLinkButton
+                label="Renew GitHub access"
+                disabled={!tokenStorageReady}
+                note={tokenStorageReady ? null : "Unavailable: the server cannot store a token securely right now."}
+              />
+            ) : (
+              <p className="text-xs" style={{ color: "var(--danger)" }}>GitHub linking is not configured for this chapter. Ask an admin.</p>
+            )}
+          </div>
+        </div>
+      )}
       {!identityVerified && (
         <div className="mb-4 rounded-xl border p-4" style={{ borderColor: "var(--line)", background: "var(--bg-muted)" }}>
           <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>

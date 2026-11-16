@@ -1,11 +1,11 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { LINKS, NEW_RESOURCES, UNCOVERED_NODES } from "@/load/seed-node-resources";
 import { toZenModel } from "@/lib/zen-embed";
 
-// Integrity of the nodeâ†’resource mapping (036 / seed-node-resources.js).
-// Every pair must reference real canonical catalogue ids â€” nothing invented â€”
+// Integrity of the node→resource mapping (036 / seed-node-resources.js).
+// Every pair must reference real canonical catalogue ids — nothing invented —
 // nodes without a genuine match must be named rather than filler-filled, and
 // YouTube playlist links must never become video embeds.
 // Fixtures are read-only snapshots of the canonical data (verified in loom_test).
@@ -17,7 +17,7 @@ const WEB_NODE_IDS = new Set([
   "web_dsa_track",
 ]);
 
-// Name-identity pairs: the catalogue's own nodeâ†”resource naming.
+// Name-identity pairs: the catalogue's own node↔resource naming.
 const NAME_IDENTITY = new Map([
   ["bc_patrick_collins", "res_bc_patrick_collins"],
   ["bc_daulat_hussain", "res_bc_daulat_hussain"],
@@ -566,24 +566,12 @@ describe("seed-node-resources canonical mapping", () => {
     // "Mapped" is not "usable": a node whose entire shelf has no destination
     // renders as an empty list of "unavailable" rows, which is what the Web
     // track looked like. Every node must hold at least one real URL.
-    //
-    // Two DSA nodes are named exceptions, and the list is pinned so it cannot
-    // grow silently: their only catalogue rows are a LeetCode/Codeforces
-    // editorial and a Udemy course, both of which answer 403 to automated
-    // requests. No URL was invented to fill them.
-    const NO_VERIFIED_URL = new Set(["dsa_leetcode_codeforces", "dsa_karumahchi"]);
     const perNode = {};
     for (const [nodeId, resourceId] of LINKS) {
       (perNode[nodeId] ??= []).push(RESOURCE_URLS[resourceId]);
     }
     for (const [nodeId, urls] of Object.entries(perNode)) {
-      if (NO_VERIFIED_URL.has(nodeId)) continue;
       expect(urls.some(Boolean), `${nodeId} has no usable resource`).toBe(true);
-    }
-    // The exception list must describe reality, not excuse a regression.
-    for (const id of NO_VERIFIED_URL) {
-      expect(perNode[id], `${id} should still be mapped`).toBeDefined();
-      expect(perNode[id].some(Boolean), `${id} unexpectedly gained a URL`).toBe(false);
     }
   });
 
@@ -615,7 +603,7 @@ describe("seed-node-resources canonical mapping", () => {
       .filter((id) => LINKS.some(([, r]) => r === id));
     expect(playlistIds.length).toBeGreaterThan(0);
     for (const id of playlistIds) {
-      // No video id in a playlist URL â†’ must NOT classify as an embed.
+      // No video id in a playlist URL → must NOT classify as an embed.
       expect(toZenModel({ id, url: RESOURCE_URLS[id] }).status).toBe("unsupported");
     }
   });

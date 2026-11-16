@@ -1,8 +1,10 @@
 import { Geist, Geist_Mono, Fraunces } from "next/font/google";
+import { headers } from "next/headers";
 import { ThemeProvider } from "@/lib/theme";
 import "./globals.css";
-import { PublicNav } from "@/components/landing/PublicNav";
+import { SiteFrame } from "@/components/landing/SiteFrame";
 import CustomCursor from "@/components/landing/CustomCursor";
+import { appBaseUrl } from "@/lib/app-url";
 
 const geistSans = Geist({
   subsets: ["latin"],
@@ -30,16 +32,16 @@ const display = Fraunces({
 });
 
 export const metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
+  metadataBase: new URL(appBaseUrl()),
   alternates: { canonical: "/" },
   title: {
-    default: "L.O.O.M. — Learn. Build. Prove. Connect.",
-    template: "%s | L.O.O.M."
+    default: "LOOM — Learn. Build. Prove. Connect.",
+    template: "%s | LOOM"
   },
-  description: "L.O.O.M. is a learning operating system for college developer communities — roadmaps, real GitHub proof, contests, mentorship, and verifiable credentials, run by student departments.",
+  description: "LOOM is a learning operating system for college developer communities — roadmaps, real GitHub proof, contests, mentorship, and verifiable credentials, run by student departments.",
   keywords: ["developer community", "college coding club", "learn to code", "roadmaps", "hackathons", "open source", "mentorship", "programming contests"],
-  authors: [{ name: "L.O.O.M." }],
-  creator: "L.O.O.M.",
+  authors: [{ name: "LOOM" }],
+  creator: "LOOM",
   verification: {
     // Set NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION after enrolling in Search Console; omitted when unset.
     google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION
@@ -56,29 +58,37 @@ export const metadata = {
   openGraph: {
     type: "website",
     locale: "en_IN",
-    siteName: "L.O.O.M.",
-    title: "L.O.O.M. — Learn. Build. Prove. Connect.",
+    siteName: "LOOM",
+    title: "LOOM — Learn. Build. Prove. Connect.",
     description: "A learning operating system for college developer communities — roadmaps, real GitHub proof, contests, mentorship, verifiable credentials.",
-    images: [{ url: "/loom-og.png", width: 1200, height: 630, alt: "L.O.O.M. — developer growth platform" }]
+    images: [{ url: "/loom-og.png", width: 1200, height: 630, alt: "LOOM — developer growth platform" }]
   },
   twitter: {
     card: "summary_large_image",
-    title: "L.O.O.M. — Learn. Build. Prove. Connect.",
+    title: "LOOM — Learn. Build. Prove. Connect.",
     description: "A learning operating system for college developer communities.",
     images: ["/loom-og.png"]
   }
 };
 
-export default function RootLayout({ children }) {
+export default async function RootLayout({ children }) {
+  // Nonce-based CSP requires dynamic rendering (Next.js CSP guide): the nonce is
+  // applied during server rendering from the CSP request header that
+  // middleware.js sets, and a build-time static page has no request to read it
+  // from. Reading the request headers here (not the value itself) opts every
+  // route under this layout into dynamic rendering, which is what makes the
+  // nonce appear on Next's inline bootstrap/flight scripts. Removing this call
+  // would ship static HTML whose inline scripts the CSP blocks.
+  await headers();
+
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} ${display.variable}`} style={{ scrollPaddingTop: "4rem" }}>
       <body>
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 z-[100] rounded bg-[var(--bg-elevated)] px-3 py-2 text-sm">Skip to content</a>
         <div aria-hidden="true" className="site-shader" />
         <ThemeProvider>
-          <PublicNav />
+          <SiteFrame>{children}</SiteFrame>
           <CustomCursor />
-          <div className="site-content">{children}</div>
         </ThemeProvider>
       </body>
     </html>

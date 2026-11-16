@@ -3,10 +3,11 @@ import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit } from "@/lib/auth-server";
 import { parseGitHubRepo, repoOwnershipOk, recordEvidence, recomputeScore } from "@/lib/ranking";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { isOptionalHttpUrl } from "@/lib/content-safety";
 
 // repo_url is REQUIRED.
 //
-// It used to be `z.string().url().optional().nullable()`, and the score was
+// It used to be a bare optional URL string, and the score was
 // awarded at insert. So `POST /api/projects {"title":"x"}` returned a fully
 // credited project: +25 on the public board, with no rate limit, no per-owner
 // cap, and no requirement that any code existed. Ten requests, 250 points,
@@ -21,7 +22,7 @@ const createSchema = z
     title: z.string().min(3).max(120),
     description: z.string().max(2000).default(""),
     roadmapNodeId: z.string().optional().nullable(),
-    repoUrl: z.string().url("Link the GitHub repository for this project").optional().nullable(),
+    repoUrl: z.string().nullable().optional().refine(isOptionalHttpUrl, "Link the GitHub repository for this project"),
     repositoryId: z.string().uuid().optional().nullable(),
     tags: z.array(z.string().min(1).max(30)).max(8).default([])
   })
@@ -35,10 +36,10 @@ export async function GET() {
   if (ctx.error === "UNAUTHORIZED") return fail("UNAUTHORIZED", "Authentication required", 401);
   if (ctx.error) return fail(ctx.error, "Profile not found", 404);
   const { user, profile, tenant, sql } = ctx;
-  const tid = tenant?.id ?? null;
+  if (!tenant?.id) return fail("FORBIDDEN", "No chapter context", 403);
   const rows = profile.role === "admin"
-    ? await sql`SELECT * FROM projects WHERE tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL ORDER BY created_at DESC LIMIT 100`
-    : await sql`SELECT * FROM projects WHERE owner_id = ${user.id} AND tenant_id = ${tid}::uuid ORDER BY created_at DESC LIMIT 100`;
+    ? await sql`SELECT * FROM projects WHERE tenant_id = ${tenant.id}::uuid ORDER BY created_at DESC LIMIT 100`
+    : await sql`SELECT * FROM projects WHERE owner_id = ${user.id} AND tenant_id = ${tenant.id}::uuid ORDER BY created_at DESC LIMIT 100`;
   return ok({ projects: rows });
 }
 
@@ -47,6 +48,7 @@ export async function POST(request) {
   if (ctx.error === "UNAUTHORIZED") return fail("UNAUTHORIZED", "Authentication required", 401);
   if (ctx.error) return fail(ctx.error, "Profile not found", 404);
   const { user, tenant, sql } = ctx;
+  if (!tenant?.id) return fail("FORBIDDEN", "No chapter context", 403);
 
   // Unbounded creation was the cheapest exploit in the system. The repository
   // requirement is the real control; this is the cost floor on top of it.
@@ -70,7 +72,7 @@ export async function POST(request) {
       SELECT id, full_name, html_url FROM repositories
       WHERE id = ${body.repositoryId}
         AND student_id = ${user.id}
-        AND (tenant_id = ${tenant?.id ?? null}::uuid OR tenant_id IS NULL)
+        AND tenant_id = ${tenant.id}::uuid
       LIMIT 1
     `;
     if (!repo) return fail("REPOSITORY_NOT_FOUND", "That repository is not in your linked GitHub account", 404);
@@ -139,7 +141,9 @@ export async function POST(request) {
   // project rows all pointing at one real repo.
   const [dupe] = await sql`
     SELECT id FROM projects
-    WHERE owner_id = ${user.id} AND repo_full_name = ${fullName} LIMIT 1
+    WHERE owner_id = ${user.id}
+      AND status <> 'archived'
+      AND lower(repo_full_name) = lower(${fullName}) LIMIT 1
   `;
   if (dupe) {
     return fail("REPO_ALREADY_CLAIMED", "You have already claimed that repository", 409);
@@ -148,24 +152,41 @@ export async function POST(request) {
   // A proven repository may start verified -- GitHub has already vouched for it,
   // so there is nothing left to wait for and no reviewer needed. Everything else
   // is provisional and scores zero.
+  //
+  // The project row, its evidence and its audit entry are one fact: a retry or a
+  // concurrent claim must never leave an inserted project without its evidence
+  // (or a second row pointing at the same repo). The partial unique index from
+  // migration 058 is the database backstop; 23505 maps to the same 409 as the
+  // application pre-check.
   const verifiedAt = proven ? new Date().toISOString() : null;
-  const [project] = await sql`
-    INSERT INTO projects (tenant_id, owner_id, title, description, roadmap_node_id, status, repo_url, tags, repo_full_name, evidence_state, verified_at, verified_by)
-    VALUES (${tenant?.id ?? null}, ${user.id}, ${body.title}, ${body.description || ""}, ${body.roadmapNodeId || null}, 'active', ${repoUrl}, ${body.tags}, ${fullName}, ${proven ? "verified" : "provisional"}, ${verifiedAt}, ${proven ? `github:${fullName}` : null})
-    RETURNING *
-  `;
-  if (proven) {
-    await recordEvidence({
-      sql, tenantId: tenant?.id, userId: user.id, kind: "project_verified", refId: project.id,
-      verifiedBy: `github:${fullName}`, source: "webhook",
-      evidence: { repository: fullName, via: "oauth_repo_grant", can_admin: grant.can_admin }
+  let project;
+  try {
+    project = await sql.begin(async (tx) => {
+      const [created] = await tx`
+        INSERT INTO projects (tenant_id, owner_id, title, description, roadmap_node_id, status, repo_url, tags, repo_full_name, evidence_state, verified_at, verified_by)
+        VALUES (${tenant?.id ?? null}, ${user.id}, ${body.title}, ${body.description || ""}, ${body.roadmapNodeId || null}, 'active', ${repoUrl}, ${body.tags}, ${fullName}, ${proven ? "verified" : "provisional"}, ${verifiedAt}, ${proven ? `github:${fullName}` : null})
+        RETURNING *
+      `;
+      if (proven) {
+        await recordEvidence({
+          sql: tx, tenantId: tenant?.id, userId: user.id, kind: "project_verified", refId: created.id,
+          verifiedBy: `github:${fullName}`, source: "webhook",
+          evidence: { repository: fullName, via: "oauth_repo_grant", can_admin: grant.can_admin }
+        });
+      }
+      await writeAudit({
+        sql: tx, actorId: user.id, tenantId: tenant?.id,
+        action: "created_project", resource: "project", resourceId: created.id,
+        after: { title: body.title, repoFullName: fullName, proven, evidenceState: created.evidence_state }
+      });
+      return created;
     });
-    await recomputeScore(sql, tenant?.id, user.id);
+  } catch (e) {
+    if (e?.code === "23505") {
+      return fail("REPO_ALREADY_CLAIMED", "You have already claimed that repository", 409);
+    }
+    throw e;
   }
-  await writeAudit({
-    sql, actorId: user.id, tenantId: tenant?.id,
-    action: "created_project", resource: "project", resourceId: project.id,
-    after: { title: body.title, repoFullName: fullName, proven, evidenceState: project.evidence_state }
-  });
+  if (proven) await recomputeScore(sql, tenant?.id, user.id);
   return ok({ project, verified: proven }, { status: 201 });
 }

@@ -1,12 +1,14 @@
+import { scope } from "@/lib/tenant-scope";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { CalendarClock, ClipboardCheck, Users } from "lucide-react";
 import { getRequestContext } from "@/lib/auth-server";
+import { loadSuccessionOverview } from "@/lib/succession";
 import { AppShell } from "@/components/AppShell";
-import { PageHeader } from "@/components/ui";
-import { Meta } from "@/components/loom/primitives";
+import { WorkspaceMasthead, WorkspaceSection, WorkspaceEmpty } from "@/components/loom/WorkspaceMasthead";
 import { HandoverBoard } from "@/app/(app)/admin/handover/_components/HandoverBoard";
 import { HandoverApprovals } from "@/app/(app)/admin/handover/_components/HandoverApprovals";
+import "../_components/admin-ledger.css";
 
 export default async function AdminHandoverPage() {
   const ctx = await getRequestContext({ adminOnly: true });
@@ -17,8 +19,8 @@ export default async function AdminHandoverPage() {
   const tid = tenant?.id ?? null;
   const [stats] = await sql`
     SELECT
-      (SELECT COUNT(*)::int FROM handover_checklists WHERE tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL) AS total,
-      (SELECT COUNT(*)::int FROM handover_checklists WHERE done = true AND (tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)) AS done
+      (SELECT COUNT(*)::int FROM handover_checklists WHERE tenant_id = ${scope(tid)}::uuid) AS total,
+      (SELECT COUNT(*)::int FROM handover_checklists WHERE done = true AND tenant_id = ${scope(tid)}::uuid) AS done
   `;
 
   const pct = (stats?.total ?? 0) > 0 ? Math.round(((stats?.done ?? 0) / (stats.total)) * 100) : 0;
@@ -31,7 +33,7 @@ export default async function AdminHandoverPage() {
   const byCategory = await sql`
     SELECT category, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE done)::int AS done
     FROM handover_checklists
-    WHERE (tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)
+    WHERE tenant_id = ${scope(tid)}::uuid
     GROUP BY category
     ORDER BY category
   `;
@@ -42,7 +44,7 @@ export default async function AdminHandoverPage() {
     SELECT p.user_id, p.name, p.role, p.role_term_end
     FROM profiles p
     LEFT JOIN platform_admins pa ON pa.user_id = p.user_id
-    WHERE (p.tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)
+    WHERE p.tenant_id = ${scope(tid)}::uuid
       AND p.role IN ('dept_lead', 'vertical_lead', 'admin')
       AND p.role_term_end IS NOT NULL
       AND p.role_term_end <= (CURRENT_DATE + INTERVAL '45 days')
@@ -51,75 +53,153 @@ export default async function AdminHandoverPage() {
     LIMIT 20
   `;
 
+  const overview = await loadSuccessionOverview({ sql, tenantId: tid });
+  const owners = await sql`
+    SELECT user_id, name, role
+    FROM profiles
+    WHERE tenant_id = ${scope(tid)}::uuid
+      AND role IN ('core', 'dept_lead', 'vertical_lead', 'admin')
+      AND account_status = 'active'
+    ORDER BY role DESC, name ASC
+    LIMIT 200
+  `;
+
   return (
     <AppShell area="admin" tenant={tenant} user={user}>
       <main className="mx-auto max-w-4xl px-4 pb-14 sm:px-6">
-        <PageHeader kicker={`Continuity · ${stats?.done ?? 0} of ${stats?.total ?? 0} transferred · ${pct}%`} title="Handover" desc="What the outgoing committee transfers — documents, contacts, ongoing projects. Check items off as they move; nothing tenure-critical lives in someone's head." />
-        <div className="mb-6 rounded-2xl border p-5" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-          <div className="flex items-center gap-3">
-            <span className="inline-flex size-8 items-center justify-center rounded-full border" style={{ borderColor: "var(--line)", background: "var(--bg)", color: "var(--text-muted)" }}><ClipboardCheck size={14} /></span>
-            <div><p className="font-mono text-sm font-semibold" style={{ color: "var(--text)" }}>{stats?.done ?? 0} / {stats?.total ?? 0}</p><p className="meta">items transferred</p></div>
-            <span className="ml-auto hidden items-center gap-1 text-xs sm:inline-flex" style={{ color: "var(--text-muted)" }}><Users size={12} /> Next committee</span>
+        <WorkspaceMasthead
+          kicker={`Continuity / ${stats?.done ?? 0} of ${stats?.total ?? 0} transferred / ${pct}%`}
+          title="Handover"
+          lede="What the outgoing committee transfers — documents, contacts, ongoing projects. Check items off as they move; nothing tenure-critical lives in someone's head."
+          meta={`${byCategory.length} checklist categories / ${expiringTerms.length} terms ending within 45 days`}
+          tone="field"
+          art="/storyloom/mentorship.png"
+          artAlt=""
+          stats={[
+            { value: stats?.done ?? 0, label: "items transferred" },
+            { value: stats?.total ?? 0, label: "items on checklist" },
+            { value: pct, unit: "%", label: "complete" },
+            { value: expiringTerms.length, label: "terms ending soon" }
+          ]}
+        />
+
+        <WorkspaceSection index="01" title="Transfer progress" note="A process tracker, not task cards — category bars come straight from the checklist rows.">
+          <div className="aled-panel">
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <span className="aled-tag"><ClipboardCheck size={12} aria-hidden="true" /> {stats?.done ?? 0} / {stats?.total ?? 0}</span>
+              <span className="aled-meta">items transferred</span>
+              <span className="aled-meta" style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "0.3rem" }}>
+                <Users size={12} aria-hidden="true" /> Next committee
+              </span>
+            </div>
+            <span className="aled-meter" style={{ width: "100%", marginTop: "0.9rem" }} aria-hidden="true">
+              <span style={{ width: `${pct}%`, background: pct === 100 ? "var(--success)" : "var(--accent)" }} />
+            </span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.9rem" }}>
+              {byCategory.length === 0 ? (
+                <p className="aled-sub" style={{ margin: 0 }}>No checklist categories yet — add an item below and its progress will appear here.</p>
+              ) : (
+                byCategory.map((c) => {
+                  const complete = c.total > 0 && c.done === c.total;
+                  return (
+                    <span key={c.category} title={`${c.done} of ${c.total} transferred`} className={`aled-tag ${complete ? "aled-tag--accent" : ""}`}>
+                      {complete ? "✓ " : "○ "}{c.category.toUpperCase()} {c.done}/{c.total}
+                    </span>
+                  );
+                })
+              )}
+            </div>
+            <p className="aled-meta" style={{ marginTop: "0.7rem" }}>{pct}% complete — process tracker, not task cards</p>
           </div>
-          <div className="mt-4 h-2 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
-            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: pct === 100 ? "var(--success)" : "var(--accent)" }} />
+        </WorkspaceSection>
+
+        <WorkspaceSection index="02" title="Outstanding succession items" note="One queue: checklist, handover briefs, transfer flags and term expiries, ordered by what still needs a person.">
+          <div className="aled-panel">
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <span className={`aled-tag ${overview.summary.outstanding_items > 0 ? "aled-tag--warn" : "aled-tag--accent"}`}>
+                <ClipboardCheck size={12} aria-hidden="true" /> {overview.summary.outstanding_items} outstanding
+              </span>
+              <span className="aled-meta">{overview.summary.checklist_outstanding} checklist / {overview.summary.handovers_open} briefs / {overview.summary.terms_expiring} terms</span>
+            </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {byCategory.length === 0 ? (
-              <p className="meta">No checklist categories yet — add an item below and its progress will appear here.</p>
-            ) : (
-              byCategory.map((c) => {
-                const complete = c.total > 0 && c.done === c.total;
-                return (
-                  <span key={c.category} title={`${c.done} of ${c.total} transferred`}
-                    className="rounded-full border px-2 py-1 text-[10px] font-bold tracking-widest"
-                    style={{ borderColor: complete ? "var(--accent)" : "var(--line)", background: complete ? "var(--accent)" : "transparent", color: complete ? "var(--bg)" : "var(--text-muted)" }}>
-                    {complete ? "✓ " : "○ "}{c.category.toUpperCase()} {c.done}/{c.total}
-                  </span>
-                );
-              })
-            )}
-          </div>
-          <p className="meta mt-2">{pct}% complete — process tracker, not task cards</p>
-        </div>
-        <section className="mb-6 rounded-2xl border p-6" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }} aria-label="Expiring leadership terms">
-          <h2 className="flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--text)" }}>
-            <CalendarClock size={14} /> Terms ending soon
-          </h2>
-          <p className="narrative mt-1">Leadership rotates annually. Hand over before the date; an expired term loses its authority automatically.</p>
-          {expiringTerms.length === 0 ? (
-            <p className="narrative mt-3">No leadership terms end in the next 45 days.</p>
+          {overview.items.length === 0 ? (
+            <WorkspaceEmpty title="Nothing outstanding" body="Every checklist item is transferred, every brief is approved, and no leadership term is near its end." />
           ) : (
-            <ul className="mt-3 divide-y rounded-xl border" style={{ borderColor: "var(--line)", background: "var(--bg)" }}>
+            <ul className="aled-ledger" style={{ listStyle: "none", margin: "0.9rem 0 0", padding: 0 }}>
+              {overview.items.map((item) => (
+                <li key={item.id} className="aled-row" style={{ "--aled-cols": "minmax(0, 1fr) auto" }}>
+                  <div className="aled-copy">
+                    <p className="aled-title">{item.title}</p>
+                    <p className="aled-sub">
+                      {item.kind === "checklist" ? "Checklist" : item.kind === "handover" ? "Handover brief" : "Leadership term"}
+                      {" / "}{item.owner.name}
+                      {item.department_name ? ` / ${item.department_name}` : ""}
+                    </p>
+                    <p className="aled-meta" style={{ marginTop: "0.3rem" }}>{item.outstanding.join("; ")}</p>
+                    {item.kind === "handover" && item.brief?.summary ? (
+                      <p className="aled-meta" style={{ marginTop: "0.2rem" }}>Brief: {item.brief.summary}</p>
+                    ) : null}
+                    {item.flags ? (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", marginTop: "0.35rem" }}>
+                        {item.flags.planner ? <span className="aled-tag">planner</span> : null}
+                        {item.flags.eventOps ? <span className="aled-tag">event ops</span> : null}
+                        {item.flags.headSlot ? <span className="aled-tag">head slot</span> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span className={`aled-tag ${item.status === "expired" || item.status === "rejected" ? "aled-tag--danger" : item.status === "ending" || item.status === "draft" ? "aled-tag--warn" : ""}`}>
+                      {item.status.replace("_", " ")}
+                    </span>
+                    {item.due_on ? (
+                      <p className="aled-meta" style={{ marginTop: "0.3rem" }}>
+                        {item.days_remaining < 0 ? `ended ${Math.abs(item.days_remaining)}d ago` : item.days_remaining === 0 ? "due today" : `${item.days_remaining}d left`}
+                      </p>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </WorkspaceSection>
+
+        <WorkspaceSection index="03" title="Terms ending soon" note="Leadership rotates annually. Hand over before the date; an expired term loses its authority automatically." action={<CalendarClock size={14} aria-hidden="true" style={{ color: "var(--text-muted)" }} />}>
+          {expiringTerms.length === 0 ? (
+            <WorkspaceEmpty title="No leadership terms ending" body="No leadership terms end in the next 45 days." />
+          ) : (
+            <ul className="aled-ledger" style={{ listStyle: "none", margin: "0.9rem 0 0", padding: 0 }}>
               {expiringTerms.map((t) => {
                 const days = Math.ceil((new Date(t.role_term_end) - new Date()) / 86400000);
                 return (
-                  <li key={t.user_id} className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 text-sm">
-                    <Link href={`/admin/students/${t.user_id}`} prefetch={false} className="font-medium hover:underline" style={{ color: "var(--text)" }}>
-                      {t.name || t.user_id.slice(0, 8)}
-                    </Link>
-                    <span className="meta capitalize">{t.role.replace("_", " ")}</span>
-                    <span className="font-mono text-xs" style={{ color: days < 0 ? "var(--danger)" : days <= 14 ? "var(--warning, #b45309)" : "var(--text-muted)" }}>
-                      {days < 0 ? `ended ${Math.abs(days)}d ago` : days === 0 ? "ends today" : `ends in ${days}d`}
-                      {" · "}{new Date(t.role_term_end).toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" })}
-                    </span>
+                  <li key={t.user_id} className="aled-row" style={{ "--aled-cols": "minmax(0, 1fr) auto" }}>
+                    <div className="aled-copy">
+                      <Link href={`/admin/students/${t.user_id}`} prefetch={false} className="aled-title">
+                        {t.name || t.user_id.slice(0, 8)}
+                      </Link>
+                      <p className="aled-sub" style={{ textTransform: "capitalize" }}>{t.role.replace("_", " ")}</p>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <span className={`aled-tag ${days < 0 ? "aled-tag--danger" : days <= 14 ? "aled-tag--warn" : ""}`}>
+                        {days < 0 ? `ended ${Math.abs(days)}d ago` : days === 0 ? "ends today" : `ends in ${days}d`}
+                      </span>
+                      <p className="aled-meta" style={{ marginTop: "0.3rem" }}>
+                        {new Date(t.role_term_end).toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" })}
+                      </p>
+                    </div>
                   </li>
                 );
               })}
             </ul>
           )}
-        </section>
-        <section className="mb-6 rounded-2xl border p-6" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }} aria-label="Leadership handover approvals">
-          <Meta>Seat handovers · admin approval required</Meta>
-          <p className="narrative mb-3 mt-1">A lead nominates a successor and files the brief. Approving moves the role, planner sessions and open event-ops in one transaction.</p>
+        </WorkspaceSection>
+
+        <WorkspaceSection index="04" title="Seat handovers" note="A lead nominates a successor and files the brief. Approving moves the role, planner sessions and open event-ops in one transaction. Admin approval required.">
           <HandoverApprovals />
-        </section>
-        <section className="rounded-2xl border p-6" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }} aria-label="Checklist">
-          <Meta>Transfer checklist · audited on toggle</Meta>
-          <div className="mt-3">
-            <HandoverBoard />
-          </div>
-        </section>
+        </WorkspaceSection>
+
+        <WorkspaceSection index="05" title="Transfer checklist" note="Audited on toggle. Add an item and its category progress appears above.">
+          <HandoverBoard owners={owners} />
+        </WorkspaceSection>
       </main>
     </AppShell>
   );

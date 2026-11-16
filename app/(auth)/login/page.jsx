@@ -5,17 +5,26 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { signIn } from "@/lib/auth-client";
-import { homeForRole, safeRedirectPath } from "@/lib/auth";
+import { authCallbackMessage, homeForRole, safeRedirectPath } from "@/lib/auth";
 import { AuthField, AuthShell, authInputClass } from "@/app/(auth)/_components/AuthShell";
 import GitHubSignInButton from "@/app/(auth)/_components/GitHubSignInButton";
+import AuthHandoffNote from "@/app/(auth)/_components/AuthHandoffNote";
+
+const AUTH0_ONLY = process.env.NEXT_PUBLIC_AUTH0_ONLY === "1";
 
 // Auth0 owns the front door. `returnTo` carries the same sanitized destination
 // the email form honours, so an Auth0 login deep-links to the page that sent the
 // user here instead of dumping them on the default home. The SDK validates
 // returnTo again on its side (toSafeRedirect), so this is defence in depth.
+//
+// With no explicit destination the default is /auth/continue, NOT the site root.
+// The SDK's own default is the root, which is the public marketing page -- a
+// member who had just signed in landed there and it reads as "login did not
+// work". /auth/continue resolves the role and sends them to the right workspace.
 function Auth0Cta() {
   const redirect = safeRedirectPath(useSearchParams().get("redirect"));
-  const href = redirect ? `/auth/login?returnTo=${encodeURIComponent(redirect)}` : "/auth/login";
+  const target = redirect || "/auth/continue";
+  const href = `/auth/login?returnTo=${encodeURIComponent(target)}`;
   return <a href={href} className="btn-ink w-full justify-center">Continue with Auth0</a>;
 }
 
@@ -26,6 +35,8 @@ function LoginForm() {
   // handed to router.push, or `/login?redirect=https://evil.example` turns this
   // page into an open redirect for freshly authenticated users.
   const redirect = safeRedirectPath(searchParams.get("redirect"));
+  // The callback redirects here with a code, never the provider's raw wording.
+  const callbackError = authCallbackMessage(searchParams.get("error"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -68,6 +79,13 @@ function LoginForm() {
 
   return (
     <form onSubmit={handleSubmit} className="mt-7 space-y-4">
+      {callbackError && (
+        <p role="alert" className="rounded-lg border px-3 py-2 text-sm"
+          style={{ borderColor: "var(--danger)", color: "var(--danger)", background: "var(--wash)" }}>
+          {callbackError}
+        </p>
+      )}
+
       <AuthField id="email" label="Email">
         <input
           id="email"
@@ -78,7 +96,7 @@ function LoginForm() {
           onChange={(e) => setEmail(e.target.value)}
           className={authInputClass}
           style={{ borderColor: "var(--line)", color: "var(--text)" }}
-          placeholder="student@college.edu"
+          placeholder="you@example.com"
           aria-describedby={error ? "login-err" : undefined}
         />
       </AuthField>
@@ -122,28 +140,38 @@ export default function LoginPage() {
       </p>
 
       <div className="mt-6 space-y-3">
-        <Suspense fallback={<a href="/auth/login" className="btn-ink w-full justify-center">Continue with Auth0</a>}>
+        <Suspense fallback={<a href="/auth/login?returnTo=%2Fauth%2Fcontinue" className="btn-ink w-full justify-center">Continue with Auth0</a>}>
           <Auth0Cta />
         </Suspense>
+        <AuthHandoffNote className="text-center" />
       </div>
 
-      <div className="my-6 flex items-center gap-3" aria-hidden="true">
-        <span className="h-px flex-1" style={{ background: "var(--line)" }} />
-        <span className="text-xs" style={{ color: "var(--text-muted)" }}>or use email and password</span>
-        <span className="h-px flex-1" style={{ background: "var(--line)" }} />
-      </div>
+      {!AUTH0_ONLY && (
+        <>
+          <div className="my-6 flex items-center gap-3" aria-hidden="true">
+            <span className="h-px flex-1" style={{ background: "var(--line)" }} />
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>or use a legacy email/password account</span>
+            <span className="h-px flex-1" style={{ background: "var(--line)" }} />
+          </div>
 
-      <Suspense fallback={<p className="mt-7 text-sm" style={{ color: "var(--text-muted)" }}>Loading…</p>}>
-        <LoginForm />
-      </Suspense>
+          <Suspense fallback={<p className="mt-7 text-sm" style={{ color: "var(--text-muted)" }}>Loading…</p>}>
+            <LoginForm />
+          </Suspense>
 
-      <Suspense fallback={null}>
-        <GitHubSignInButton />
-      </Suspense>
+          <Suspense fallback={null}>
+            <GitHubSignInButton />
+          </Suspense>
+        </>
+      )}
 
       <p className="mt-7 text-center text-sm" style={{ color: "var(--text-muted)" }}>
         New here?{" "}
-        <Link prefetch={false} href="/register" className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>
+        <Link
+          prefetch={false}
+          href={AUTH0_ONLY ? "/auth/login?screen_hint=signup&returnTo=%2Fauth%2Fcontinue" : "/register"}
+          className="font-semibold hover:underline"
+          style={{ color: "var(--accent)" }}
+        >
           Create an account
         </Link>
       </p>

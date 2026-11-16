@@ -9,6 +9,7 @@
 //   node load/expire-terms.js            # dry run
 //   node load/expire-terms.js --apply    # write notifications + markers
 import postgres from "postgres";
+import { scope } from "../lib/tenant-scope.js";
 import { databaseUrl } from "./env-local.js";
 
 const apply = process.argv.includes("--apply");
@@ -68,7 +69,7 @@ try {
                '/admin/handover'
         FROM profiles p
         WHERE p.role = 'admin'
-          AND (p.tenant_id = ${t.tenant_id}::uuid OR ${t.tenant_id}::uuid IS NULL)
+          AND p.tenant_id = ${scope(t.tenant_id)}::uuid
           AND p.user_id <> ${t.user_id}
       `;
 
@@ -76,15 +77,16 @@ try {
       const [existing] = await tx`
         SELECT id FROM handover_checklists
         WHERE title = ${title}
-          AND (tenant_id = ${t.tenant_id}::uuid OR ${t.tenant_id}::uuid IS NULL)
+          AND tenant_id = ${scope(t.tenant_id)}::uuid
         LIMIT 1
       `;
       if (!existing) {
         await tx`
-          INSERT INTO handover_checklists (tenant_id, title, category, detail)
+          INSERT INTO handover_checklists (tenant_id, title, category, detail, owner_id)
           VALUES (
             ${t.tenant_id}, ${title}, 'leadership',
-            ${`Term ended ${t.ends_on}. Holder: ${t.name || t.user_id}. Reappoint or transfer ownership.`}
+            ${`Term ended ${t.ends_on}. Holder: ${t.name || t.user_id}. Reappoint or transfer ownership.`},
+            ${t.user_id}
           )
         `;
       }

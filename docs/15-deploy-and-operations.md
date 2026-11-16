@@ -6,21 +6,27 @@ Node 20+, a Supabase project (Postgres + Auth), `DATABASE_URL` pooler string.
 
 ## 2. Environment
 
+> Two origins, one codebase. Local and production need **different** GitHub
+> OAuth Apps and a different `NEXT_PUBLIC_APP_URL` — the full matrix, including
+> the Auth0/Supabase allow-lists and the `tenant_domains` rows, is in
+> [`27-local-and-production-config.md`](27-local-and-production-config.md).
+
 | Var | Required | Purpose |
 |-----|----------|---------|
 | `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Auth + client |
 | `DATABASE_URL` | yes | Migrations, seeds, rollups, server queries. Must be the **owner** (`postgres.<project-ref>`) — the app also uses it for unauthenticated public reads |
-| `DATABASE_APP_URL` | yes | Request handling as `loom_app` (NOBYPASSRLS, not the table owner). **Falls back to `DATABASE_URL` if unset**, which silently disables Row Level Security — `npm run rls:verify` will fail loudly. See `rls-rollout-runbook.md` |
+| `DATABASE_APP_URL` | yes in production | Request handling as `loom_app` (NOBYPASSRLS, not the table owner). `lib/env.js` falls back to `DATABASE_URL` for local work, but **production startup validation refuses to run without an explicit value** — otherwise the owner connection would silently bypass Row Level Security. `npm run rls:verify` also fails loudly. See `rls-rollout-runbook.md` |
 | `SUPABASE_SERVICE_ROLE_KEY` | for admin APIs + storage | Currently empty in dev — admin user management limited until set. Also required server-side by `lib/storage.js` (lead-tool file uploads) |
 | `SUPABASE_STORAGE_BUCKET` | no (default `loom-files`) | Private bucket for lead-tool documents/assets. Create it and seed categories with `node load/setup-storage.js` |
-| `NEXT_PUBLIC_APP_URL` | yes | metadataBase, share/verify links, calendar links. Unset in production publishes every absolute URL as `localhost` |
+| `NEXT_PUBLIC_APP_URL` | yes | metadataBase, share/verify links, calendar links, and the GitHub OAuth `redirect_uri`. Unset in production publishes every absolute URL as `localhost`; set to the **retired** host it publishes the retired host. Changing it requires a redeploy — `NEXT_PUBLIC_*` is inlined at build time |
 | `DEFAULT_TENANT_SLUG` | no (defaults to `DEV_TENANT_SLUG`) | Chapter that owns a server-to-server delivery (webhook) that carries no chapter identity in its `Host` header |
-| `DEV_TENANT_SLUG` | no (default `demo-college`) | Fallback tenant for first-visit profiles |
+| `DEV_TENANT_SLUG` | local yes | Local/fallback chapter slug; no hardcoded default. Production onboarding resolves the chapter from the request host or `DEFAULT_TENANT_SLUG` |
 | `DEV_TENANT_DOMAIN` | no (default `localhost`) | Host treated as the local dev tenant |
-| `GITHUB_WEBHOOK_SECRET` | yes | Webhook HMAC; also fallback signing secret. **Production rejects placeholder values** (`dev-secret`, `hello`, …) and anything under 16 chars |
-| `CREDENTIAL_SECRET` | no | Credential/OAuth-state HMAC (falls back to webhook secret) |
+| `GITHUB_WEBHOOK_SECRET` | yes | Webhook HMAC only. **Production rejects placeholder values** (`dev-secret`, `hello`, …) and anything under 16 chars |
+| `CREDENTIAL_SECRET` | yes in production | Credential share-link + GitHub OAuth-state HMAC. Deliberately has **no fallback** to the webhook secret, so rotating one trust domain does not invalidate the other. Production rejects a missing, placeholder, or sub-16-character value |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | for repo picker | GitHub OAuth App for repository grants; callback `${NEXT_PUBLIC_APP_URL}/api/github/oauth/callback`, scopes `repo` + `read:user`. Unset = the app reports OAuth not configured; repository picking stays unavailable |
 | `GITHUB_TOKEN_ENCRYPTION_KEY` | for repo picker | 32 random bytes, base64 (AES-256-GCM key for sealed GitHub tokens). Rotating it invalidates every stored token; members must re-link. See `21-github-oauth-setup.md` |
+| `DEBUG_CHALLENGE_REPO` | no | Public `owner/repo` holding Debug & Build starter bugs. Defaults to `L-OO-M/buggy`; not set = that default is used |
 | `GITHUB_ISSUES_REPO` | no | `owner/repo` that feature requests mirror into. Unset = the GitHub Issues bridge is off and submissions behave exactly as before |
 | `GITHUB_ISSUES_TOKEN` | no | Fine-grained token with **issues: write** on that repo (≥20 chars). Server-only — never `NEXT_PUBLIC_`. Missing token = bridge off, not a crash |
 | `RESEND_API_KEY` | no | Optional email-verification sender. Unset = verification is unavailable and the UI says so; accounts are never blocked |
@@ -28,7 +34,25 @@ Node 20+, a Supabase project (Postgres + Auth), `DATABASE_URL` pooler string.
 | `AEO_BLOCK_TRAINING` | no | `1` blocks training-only crawlers (GPTBot, CCBot, …) in `robots.txt` while keeping search/assistant crawlers allowed. Unset = allow all public crawling |
 | `NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION` | no | Search Console ownership meta tag, emitted once in `app/layout.jsx` |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` / `AUTH0_SECRET` | yes | **Auth0 login front door.** `AUTH0_SECRET` encrypts the session cookie (≥32 chars). Read only by `@auth0/nextjs-auth0` (via `lib/auth0.js`); **never** `NEXT_PUBLIC_`. Production boot rejects a missing or placeholder/short `AUTH0_SECRET` |
+| `NEXT_PUBLIC_AUTH0_ONLY` | no (default `0`) | `1` hides the legacy Supabase email/password and GitHub forms on `/login` and `/register`. Enable only after existing accounts can sign in through Auth0 |
+| `AUTH0_MANAGEMENT_CLIENT_ID` / `AUTH0_MANAGEMENT_CLIENT_SECRET` | no (password onboarding) | Machine-to-Machine app authorized for the Auth0 Management API with `read:users`, `create:users`, `update:users`, `delete:users`. Used only by `lib/auth0-management.js` to add a database identity/password to social accounts. Unset = the UI reports password setup unavailable and keeps social sign-in usable |
+| `AUTH0_DB_CONNECTION` | no (default `Username-Password-Authentication`) | Auth0 database connection used when creating the password identity |
+| `AUTH0_DB_CONNECTION_ID` | migration only | `con_...` ID for `load/auth0-migrate.mjs`; avoids needing `read:connections`. See `24-auth0-migration.md` |
+| `AUTH0_MIGRATION_SCOPES` | no | Optional token scopes for migration; use `read:users create:users read:connections` only if those scopes are granted to the M2M app |
 | `APP_BASE_URL` | no (recommended in prod) | Origin the SDK uses to build `/auth/callback` and logout URLs. Unset locally so the SDK infers it from the `Host` header (dev `localhost:3000` **and** Playwright `127.0.0.1:3000` both work). Set per deploy to the exact registered origin — **no `:443` suffix**. Every origin must be in the Auth0 app's Allowed Callback / Logout / Web Origins lists |
+
+### Auth0 password onboarding (Management API)
+
+Password setup for social accounts is optional. To enable it:
+
+1. Auth0 Dashboard → Applications → **Create Application** → Machine-to-Machine.
+2. Authorize it for the **Auth0 Management API** with `read:users`, `create:users`, `update:users`, `delete:users`.
+3. Add the app's client ID/secret as `AUTH0_MANAGEMENT_CLIENT_ID` / `AUTH0_MANAGEMENT_CLIENT_SECRET` locally and in Vercel.
+4. Redeploy, sign in through Auth0, and open `/student/settings`. The password fields appear only when the signed-in user has a verified email and no database identity yet.
+
+The existing Auth0 application client is not authorized for the Management API; a separate M2M grant is required. If the variables are absent, `/api/auth/security` reports `managementConfigured: false` and the UI keeps social sign-in only.
+
+For moving existing Supabase accounts, including password-hash export and bulk import, see [24-auth0-migration.md](24-auth0-migration.md).
 
 ### Search Console verification
 
@@ -83,10 +107,13 @@ node load/sync-feature-requests.js --refresh        # pull state/status from Git
 node load/sync-feature-requests.js --refresh --apply
 ```
 
-> **Placeholder secrets are rejected at boot.** `lib/env.js` compares by *value*,
-> not just presence. A deploy carrying `GITHUB_WEBHOOK_SECRET=dev-secret` — the value
-> shipped in `.env.example` — used to pass validation while accepting a publicly
-> known HMAC key. It now throws.
+> **Placeholder secrets are rejected by the validation function, not by magic at
+> module load.** `lib/env.js` compares by *value*, not just presence, so
+> `GITHUB_WEBHOOK_SECRET=dev-secret` (the value shipped in `.env.example`) is
+> rejected even though it is set. The check only runs where it is called: today
+> that is the GitHub webhook and `GET /api/health` (which reports the problems
+> instead of throwing). To make it a true boot gate, wire
+> `lib/deploy-env-check.js` into the runtime; see §2c.
 
 ## 2b. Health and isolation state
 
@@ -104,6 +131,38 @@ Returns `503` when Postgres is unreachable, and reports:
 
 The endpoint is unauthenticated, so it deliberately exposes no tenant id, host,
 port, or error strings.
+
+## 2c. Deploy-time environment check
+
+`lib/deploy-env-check.js` is the small, dependency-free bridge between the
+existing rules in `lib/env.js` and anything that boots the app:
+
+```js
+export function validateDeployEnv() // { ok, problems: [] } — non-throwing, for health/deploy scripts
+export function assertDeployEnv()   // delegates to assertProductionSecrets(); throws in production
+```
+
+**Runtime wiring:** root `instrumentation.js` calls `assertDeployEnv()` when a
+Node.js server instance starts. The production build phase is skipped because a
+build host may not hold runtime secrets; a serving instance still refuses to
+start with missing or placeholder values.
+
+```js
+// instrumentation.js
+export async function register() {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  if (process.env.NEXT_PHASE === "phase-production-build") return;
+  assertDeployEnv();
+}
+```
+
+Local production-build E2E must provide the required test secrets (see
+`AGENTS.md`); CI's `next build` runs in the build phase and does not need them.
+Validation is production-only (`NODE_ENV === "production"`); local dev and CI
+builds do not require secrets. It checks the same variables as
+`assertProductionSecrets()`: `DATABASE_URL`, explicit `DATABASE_APP_URL`, the
+signing secrets, the GitHub OAuth trio, Auth0 credentials, and
+`NEXT_PUBLIC_APP_URL`.
 
 ## 3. Scripts
 
@@ -147,9 +206,30 @@ rollups:
 0 3 * * *  cd /app && npm run prune:retention -- --apply
 ```
 
-> The rollups and the prune are still **manual or externally scheduled** — there
-> is no in-repo scheduler and no `vercel.json`. Wire them to whatever your
-> platform provides.
+The same jobs are callable over the authenticated scheduler endpoint:
+
+```
+GET  /api/jobs/run                 # all jobs
+GET  /api/jobs/run?job=analytics-rollup
+Authorization: Bearer <CRON_SECRET>
+```
+
+Job names live in `lib/scheduler.js`: `deadline-reminders`,
+`analytics-rollup`, `federation-rollup`, `retention-prune`, `term-expiry`,
+`outbox-drain`.
+
+With `CRON_SECRET` unset the endpoint returns 503; a wrong/missing secret
+returns 401. There is still **no committed `vercel.json`**, so wire the calls
+to your platform's scheduler (Vercel Cron, GitHub Actions, or an external
+cron). The load scripts remain supported for manual/rehearsal runs.
+
+`outbox-drain` is a consequence of that gap: the `outbox` table (migrations
+066/067) exists so a side effect can be committed with the business write and
+retried later, but nothing enqueues onto it yet **and** nothing calls the drain
+job on a schedule. Queued rows stay `pending` until a cron above points at
+`/api/jobs/run?job=outbox-drain`. Wire the schedule before migrating a consumer
+onto the outbox, or the side effect it replaces gets delayed instead of
+delivered. See `docs/25` item 4.2.
 
 ### Deadline reminders
 
@@ -275,12 +355,136 @@ The build itself needs **no database access**: no route queries a database at
 build time (the roadmap routes are `ƒ` dynamic), and no `load/*.js` script is
 imported by application code.
 
-**Deliberately not automated:** migrations are not run by `postinstall`,
-`prebuild`, or any CI workflow (this repository has no `.github/workflows`).
-Every preview deployment targets the same shared database, so a build-time
-migration would apply production DDL from every branch and every preview. Run
-migrations as an explicit, human-invoked step against the intended database
-before promoting a build, and confirm with `db:verify`.
+**CI never points at a shared database.** `.github/workflows/ci.yml` runs a
+read-only gitleaks secret scan, lint + encoding, unit tests, build, and a
+**migration apply-twice** job against a disposable `postgres:16` service
+container. That job creates the Supabase-compatible `anon`/`authenticated` roles
+the base schema revokes from, applies every migration, applies them again, and
+fails unless the second pass reports `0 applied`. It uses no app secrets and
+never touches production.
+
+E2E is deliberately **not** in per-PR CI: it needs real Auth0/Supabase
+credentials and a seeded database. A nightly staging workflow is **not present
+yet**; adding one requires a dedicated staging project first (see §4d). Do not
+point a nightly workflow at production secrets.
+
+Deliberately not automated: production migrations are not run by `postinstall`,
+`prebuild`, or CI. Every preview deployment currently targets the same shared
+database, so a build-time migration would apply production DDL from every
+branch and preview. Run migrations as an explicit, human-invoked step against
+the intended database before promoting a build, and confirm with `db:verify`.
+
+## 4c. Migration rehearsal and rollback
+
+Every migration is append-only, idempotent, and applied in one transaction by
+`load/migrate.js`; a failed file rolls back completely and leaves no
+`schema_migrations` row. Rehearse the same shape locally before merging:
+
+```bash
+# 1. Disposable Postgres (never a shared/production database).
+docker run --rm -d --name loom-ci-pg \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=loom_ci -p 55432:5432 postgres:16
+
+# 2. The base schema revokes from Supabase's anon/authenticated roles, so create
+#    them first (CI does the same in .github/workflows/ci.yml).
+node -e "const p=require('postgres');const s=p('postgresql://postgres:postgres@localhost:55432/loom_ci',{max:1});(async()=>{await s`CREATE ROLE anon NOLOGIN`;await s`CREATE ROLE authenticated NOLOGIN`;await s.end()})()"
+
+# 3. Apply twice. The second pass MUST print "0 applied".
+DATABASE_URL=postgresql://postgres:postgres@localhost:55432/loom_ci node load/migrate.js
+DATABASE_URL=postgresql://postgres:postgres@localhost:55432/loom_ci node load/migrate.js
+
+# 4. Prove the ledger advanced exactly once.
+node -e "const p=require('postgres');const s=p('postgresql://postgres:postgres@localhost:55432/loom_ci',{max:1});s`SELECT count(*)::int AS n FROM schema_migrations`.then(r=>{console.log(r[0].n);return s.end()})"
+```
+
+**Rollback is not `down.sql`.** This repo has no down migrations by design.
+If a migration is wrong after it has been applied to a shared environment:
+
+1. Do not edit the applied file and do not `DROP`/`ALTER` by hand.
+2. Write a new, forward-only compensating migration (new number, idempotent)
+   that restores the previous shape or data.
+3. Rehearse it the same way, merge and apply it, then verify with `db:verify`
+   and `/api/health`.
+4. If the damage is application-level, revert the code commit
+   (`git revert <sha>`) before forward-fixing.
+
+A database restore is the emergency path, not the normal path: see the restore
+drill in §4d.
+
+## 4d. External / human-only actions (not performed here)
+
+These need production credentials, paid resources, or a human decision. They are
+**not done**; the exact steps are recorded so the next operator can execute
+them.
+
+**Branch protection** (requires repo admin; `gh` is already authenticated):
+
+```bash
+cat > /tmp/loom-protection.json <<'JSON'
+{
+  "required_status_checks": { "strict": true, "contexts": ["Lint + encoding", "Unit tests", "Build", "Migrations (apply twice)"] },
+  "enforce_admins": true,
+  "required_pull_request_reviews": { "required_approving_review_count": 1, "require_code_owner_reviews": true },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+gh api -X PUT repos/L-OO-M/LOOM/branches/main/protection --input /tmp/loom-protection.json
+```
+
+There is **no** `.github/CODEOWNERS` in this repository. Creating one requires a
+verified owner/team handle; a guessed handle would silently fail to request the
+right review. Add it only after confirming the organisation handle, then enable
+**Require review from Code Owners**.
+
+**Nightly E2E staging.** Create a separate Supabase project (do not reuse the
+production project). Set repository **variables** `E2E_STAGING_ENABLED=true` and
+**secrets** `E2E_STAGING_DATABASE_URL`, `E2E_STAGING_DATABASE_APP_URL`,
+`E2E_STAGING_NEXT_PUBLIC_SUPABASE_URL`,
+`E2E_STAGING_NEXT_PUBLIC_SUPABASE_ANON_KEY`, `E2E_STAGING_AUTH0_DOMAIN`,
+`E2E_STAGING_AUTH0_CLIENT_ID`, `E2E_STAGING_AUTH0_CLIENT_SECRET`,
+`E2E_STAGING_AUTH0_SECRET`, `E2E_LOGIN_EMAIL`, `E2E_LOGIN_PASSWORD`. The workflow
+must be added in the same change that enables the variables.
+
+**Preview database sharing.** Today every Vercel preview targets the shared
+database. To stop that: create a second Supabase project, set its pooler strings
+as **Preview**-scope `DATABASE_URL` / `DATABASE_APP_URL` (leave Production
+untouched), apply migrations once, then confirm `/api/health` on a preview
+deployment points at the preview project. This is a human decision because it
+creates a paid resource.
+
+**Secret rotation** (requires dashboard access; do not paste values into logs):
+
+1. Supabase → Project Settings → Database → Reset database password. Update both
+   `DATABASE_URL` and `DATABASE_APP_URL` in Vercel (migrations/seeds use
+   `DATABASE_URL`; request handling uses `DATABASE_APP_URL`), redeploy.
+2. Auth0 → Applications → the M2M app → Rotate secret. Update
+   `AUTH0_MANAGEMENT_CLIENT_SECRET`, redeploy.
+3. Rotating `GITHUB_TOKEN_ENCRYPTION_KEY` **orphans every sealed GitHub token**;
+   plan a re-link window and a user-facing message before doing it.
+4. Rotating `CREDENTIAL_SECRET` invalidates existing credential share links and
+   in-flight OAuth state; announce before rotating.
+5. Record the rotation date and operator in the ops log (not in this repo).
+
+**Restore drill** (Supabase PITR/backups must be enabled):
+
+1. Create a scratch Supabase project.
+2. Restore the production backup into it (Supabase Dashboard → Database →
+   Backups, or `pg_restore` from the downloaded dump).
+3. Point a local shell at the scratch project and run
+   `node load/verify-roadmap-shelf.js`, `node load/verify-rls.js`, and a read of
+   `/api/health`.
+4. Record restore duration and any missing grants (the `loom_app` role and its
+   default privileges are part of the schema; a partial restore can drop them).
+5. Delete the scratch project after the drill.
+
+**Legal decisions.** The public legal pages no longer contain bracketed
+placeholders; they read operator/contact/retention/governing-law values from
+`lib/legal.js`. Set `LEGAL_OPERATOR_NAME`, `LEGAL_CONTACT_NAME`,
+`LEGAL_CONTACT_EMAIL`, `LEGAL_RETENTION_PERIOD`, `LEGAL_GOVERNING_LAW`,
+`LEGAL_LIABILITY_CAP`, and `LEGAL_PUBLISHED_DATE` at deploy time. The defaults
+are honest but generic; the chapter still needs to confirm the legal details.
 
 ## 5. Runbook
 

@@ -3,11 +3,12 @@ import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit } from "@/lib/auth-server";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { parseContributionUrl } from "@/lib/oss";
+import { isOptionalHttpUrl, HTTP_URL_MESSAGE } from "@/lib/content-safety";
 
 // `commit` used to be accepted here but nothing ever verified one, so it only
 // created a claim that could never count. Claims are PRs, issues, or reviews.
 const claimSchema = z.object({
-  prUrl: z.string().url().max(300),
+  prUrl: z.string().max(300).refine(isOptionalHttpUrl, HTTP_URL_MESSAGE),
   title: z.string().max(200).default(""),
   contributionType: z.enum(["pr", "issue", "review"]).optional()
 });
@@ -54,6 +55,19 @@ export async function POST(request) {
   }
   if (contributionType !== "issue" && parsed.kind !== "pr") {
     return fail("TYPE_MISMATCH", "That is an issue link — claim it as an issue.", 400);
+  }
+  if (contributionType === "issue") {
+    const [other] = await sql`
+      SELECT id, student_id FROM student_oss_contributions
+      WHERE tenant_id = ${tenant?.id ?? null}::uuid
+        AND contribution_type = 'issue'
+        AND canonical_url = ${parsed.canonicalUrl}
+        AND student_id <> ${user.id}
+      LIMIT 1
+    `;
+    if (other) {
+      return fail("ISSUE_ALREADY_CLAIMED", "Another student already claimed that issue", 409);
+    }
   }
   const [project] = await sql`
     SELECT * FROM open_source_projects

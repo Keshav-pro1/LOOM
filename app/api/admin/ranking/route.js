@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit, notify } from "@/lib/auth-server";
 import { recomputeScore, revokeEvidence, recordEvidence } from "@/lib/ranking";
+import { signCredential } from "@/lib/credentials";
 
 // The evidence review queue.
 //
@@ -127,7 +129,8 @@ export async function POST(request) {
   } else {
     const [row] = await sql`
       SELECT owner_id, title FROM projects
-      WHERE id = ${body.id} AND tenant_id = ${tid}::uuid AND evidence_state = 'provisional'
+      WHERE id = ${body.id} AND tenant_id = ${tid}::uuid
+        AND evidence_state IN ('provisional', 'verified')
       LIMIT 1
     `;
     if (!row) return fail("NOT_FOUND", "That claim is no longer awaiting review", 404);
@@ -170,18 +173,61 @@ export async function POST(request) {
         evidence: { reviewedIn: "/admin/ranking" }
       });
     } else {
-      const [updated] = await sql`
-        UPDATE projects
-           SET evidence_state = 'verified', verified_by = ${reviewer}, verified_at = NOW(), updated_at = NOW()
-         WHERE id = ${body.id} AND evidence_state = 'provisional'
-        RETURNING *
-      `;
-      if (!updated) return fail("NOT_FOUND", "That claim is no longer awaiting review", 404);
-      await recordEvidence({
-        sql, tenantId: tid, userId: studentId, kind: ledgerKind, refId,
-        verifiedBy: reviewer, source: "admin",
-        evidence: { reviewedIn: "/admin/ranking", repository: updated.repo_full_name }
+      // Verification, the achievement, and its credential are one act. A
+      // partial failure must not leave the project marked verified without the
+      // proof a student can share.
+      const credential = await sql.begin(async (tx) => {
+        const [updated] = await tx`
+          UPDATE projects
+             SET evidence_state = 'verified', verified_by = ${reviewer}, verified_at = NOW(),
+                 reviewed_at = NOW(), status = 'completed', updated_at = NOW()
+           WHERE id = ${body.id} AND evidence_state = 'provisional'
+          RETURNING *
+        `;
+        if (!updated) return null;
+        await recordEvidence({
+          sql: tx, tenantId: tid, userId: studentId, kind: ledgerKind, refId,
+          verifiedBy: reviewer, source: "admin",
+          evidence: { reviewedIn: "/admin/ranking", repository: updated.repo_full_name }
+        });
+        const [created] = await tx`
+          INSERT INTO student_achievements
+            (student_id, tenant_id, source_type, source_ref, level, evidence_url)
+          SELECT ${studentId}, ${tid}::uuid, 'project', ${updated.id}, 'gold', ${updated.repo_url}
+          WHERE NOT EXISTS (
+            SELECT 1 FROM student_achievements
+            WHERE student_id = ${studentId} AND source_type = 'project' AND source_ref = ${updated.id}
+          )
+          RETURNING *
+        `;
+        let achievement = created;
+        if (!achievement) {
+          [achievement] = await tx`
+            SELECT * FROM student_achievements
+            WHERE student_id = ${studentId} AND source_type = 'project' AND source_ref = ${updated.id}
+            LIMIT 1
+          `;
+        }
+        if (!achievement) return null;
+        const [existing] = await tx`
+          SELECT id FROM verifiable_credentials WHERE achievement_id = ${achievement.id} LIMIT 1
+        `;
+        if (existing) return existing;
+        const id = `cred_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        const issuedAt = new Date().toISOString();
+        const signature = signCredential({ id, studentId, type: "project", issuedAt });
+        const [issued] = await tx`
+          INSERT INTO verifiable_credentials
+            (id, student_id, tenant_id, achievement_id, credential_type, title, metadata, issued_at, signature)
+          VALUES (${id}, ${studentId}, ${tid}, ${achievement.id}, 'project',
+            ${`Verified project · ${updated.title}`},
+            ${JSON.stringify({ projectId: updated.id, repo: updated.repo_url, reviewedIn: "/admin/projects" })}::jsonb,
+            ${issuedAt}, ${signature})
+          RETURNING *
+        `;
+        return issued;
       });
+      if (!credential) return fail("NOT_FOUND", "That claim is no longer awaiting review", 404);
     }
   } else {
     if (body.kind === "roadmap_node") {
@@ -191,11 +237,20 @@ export async function POST(request) {
          WHERE id = ${body.id} AND evidence_state = 'provisional'
       `;
     } else {
-      await sql`
-        UPDATE projects
-           SET evidence_state = 'rejected', verified_by = ${reviewer}, verified_at = NOW(), updated_at = NOW()
-         WHERE id = ${body.id} AND evidence_state = 'provisional'
-      `;
+      await sql.begin(async (tx) => {
+        await tx`
+          UPDATE projects
+             SET evidence_state = 'rejected', verified_by = ${reviewer}, verified_at = NOW(),
+                 reviewed_at = NOW(), status = 'rejected', updated_at = NOW()
+           WHERE id = ${body.id} AND evidence_state IN ('provisional', 'verified')
+        `;
+        // Removing the achievement cascades to the credential, so declining a
+        // project also withdraws a previously issued share link.
+        await tx`
+          DELETE FROM student_achievements
+          WHERE student_id = ${studentId} AND source_type = 'project' AND source_ref = ${body.id}
+        `;
+      });
     }
     // Reverse the ledger row too. It normally does not exist yet -- a provisional
     // claim never wrote one -- but if an earlier claim on the same ref was
@@ -229,9 +284,30 @@ export async function POST(request) {
 
 // Reverse every claim a student has that no verifier stands behind.
 //
-// Deletes the provisional rows themselves so the queue does not re-surface them,
-// and removes any ledger row that a previous confirmation left behind.
+// Reads the unverified claims BEFORE flipping their state, because the ledger
+// row to reverse is keyed by (kind, ref_id) and a rejected claim is
+// indistinguishable from a verified one by state alone once we start writing.
+//
+// Reversal is per claim through revokeEvidence, never a tenant+user DELETE on
+// ranking_events: that also wiped verified OSS, roadmap and project evidence,
+// which this action has no business touching. A claim that a previous
+// confirmation left a ledger row behind for still loses exactly that row; every
+// verified claim keeps its own.
 async function clearUnverifiedFor({ sql, tenantId, studentId, reviewer }) {
+  const roadmapClaims = await sql`
+    SELECT node_id
+      FROM student_roadmap_progress
+     WHERE tenant_id = ${tenantId}::uuid AND student_id = ${studentId}
+       AND status = 'completed'
+       AND evidence_state IN ('provisional', 'rejected')
+  `;
+  const projectClaims = await sql`
+    SELECT id
+      FROM projects
+     WHERE tenant_id = ${tenantId}::uuid AND owner_id = ${studentId}
+       AND evidence_state IN ('provisional', 'rejected')
+  `;
+
   await sql`
     UPDATE student_roadmap_progress
        SET evidence_state = 'rejected', verified_by = ${reviewer}, verified_at = NOW(), updated_at = NOW()
@@ -242,8 +318,17 @@ async function clearUnverifiedFor({ sql, tenantId, studentId, reviewer }) {
        SET evidence_state = 'rejected', verified_by = ${reviewer}, verified_at = NOW(), updated_at = NOW()
      WHERE tenant_id = ${tenantId}::uuid AND owner_id = ${studentId} AND evidence_state = 'provisional'
   `;
-  await sql`
-    DELETE FROM ranking_events
-     WHERE tenant_id = ${tenantId}::uuid AND user_id = ${studentId}
-  `;
+
+  // Sequential, like every other query here: the pooler is shared and this is
+  // one bounded per-claim loop, not a Promise.all batch.
+  for (const claim of roadmapClaims) {
+    await revokeEvidence({
+      sql, tenantId, userId: studentId, kind: "roadmap_done", refId: claim.node_id
+    });
+  }
+  for (const claim of projectClaims) {
+    await revokeEvidence({
+      sql, tenantId, userId: studentId, kind: "project_verified", refId: claim.id
+    });
+  }
 }

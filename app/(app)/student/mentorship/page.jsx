@@ -2,11 +2,13 @@ import { redirect } from "next/navigation";
 import { getRequestContext } from "@/lib/auth-server";
 import { eligibilityFor } from "@/lib/mentorship";
 import { AppShell } from "@/components/AppShell";
-import { Display, Meta, ActionLink, StatusPill } from "@/components/loom/primitives";
+import { ActionLink, StatusPill } from "@/components/loom/primitives";
+import { WorkspaceMasthead, WorkspaceSection } from "@/components/loom/WorkspaceMasthead";
 import { Timeline, TimelineItem } from "@/components/loom/Timeline";
 import { OnboardingState } from "@/components/loom/States";
 import { ApplyForm } from "./ApplyForm";
 import { MentorsBrowser } from "./_components/MentorsBrowser";
+import { SessionActions } from "./_components/SessionActions";
 import { ConnectTabs } from "@/components/student/SectionRails";
 
 export const dynamic = "force-dynamic";
@@ -39,7 +41,8 @@ export default async function MentorshipPage() {
   const ctx = await getRequestContext();
   if (ctx.error) redirect("/login?redirect=/student/mentorship");
   const { user, tenant, sql } = ctx;
-  const tid = tenant?.id ?? null;
+  if (!tenant?.id) redirect("/login?redirect=/student/mentorship");
+  const tid = tenant.id;
 
   const mentorRows = await sql`
     SELECT m.id, m.user_id, m.expertise, m.bio, m.created_at,
@@ -51,14 +54,24 @@ export default async function MentorshipPage() {
     FROM mentors m
     LEFT JOIN profiles p ON p.user_id = m.user_id
     LEFT JOIN user_profiles up ON up.user_id = m.user_id
-    WHERE (m.tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL) AND m.available = true
+    WHERE m.tenant_id = ${tid}::uuid AND m.available = true
     ORDER BY m.created_at DESC LIMIT 50
   `;
+  // Both sides of the loop see the same history: a student their requests, a
+  // mentor the sessions they accepted. The tenant predicate keeps a moved
+  // member's stale session out of the chapter view.
   const sessionRows = await sql`
-    SELECT s.id, s.status, s.scheduled_at, p.name as mentor_name FROM mentor_sessions s
-    LEFT JOIN profiles p ON p.user_id = s.mentor_id
-    WHERE s.student_id = ${user.id}
-    ORDER BY s.scheduled_at DESC NULLS LAST, s.id DESC LIMIT 10
+    SELECT s.id, s.status, s.scheduled_at, s.mentor_id, s.student_id,
+           mp.name AS mentor_name, sp.name AS student_name
+    FROM mentor_sessions s
+    LEFT JOIN profiles mp ON mp.user_id = s.mentor_id
+    LEFT JOIN profiles sp ON sp.user_id = s.student_id
+    WHERE (s.student_id = ${user.id} OR s.mentor_id = ${user.id})
+      AND EXISTS (
+        SELECT 1 FROM profiles p
+        WHERE p.user_id = s.mentor_id AND p.tenant_id = ${tid}::uuid
+      )
+    ORDER BY s.scheduled_at DESC NULLS LAST, s.id DESC LIMIT 20
   `;
   // The far end of the loop: candidacy computed from evidence.
   const [mentorRow] = await sql`SELECT user_id FROM mentors WHERE user_id = ${user.id} LIMIT 1`;
@@ -98,12 +111,17 @@ export default async function MentorshipPage() {
       avg_rating: Number(m.avg_rating) || 0
     };
   });
-  const sessions = sessionRows.map((s) => ({
-    id: String(s.id),
-    status: String(s.status || "requested"),
-    scheduled_at: s.scheduled_at instanceof Date ? s.scheduled_at.toISOString() : s.scheduled_at ? String(s.scheduled_at) : null,
-    mentor_name: s.mentor_name || "Mentor session"
-  }));
+  const sessions = sessionRows.map((s) => {
+    const isMentor = s.mentor_id === user.id;
+    return {
+      id: String(s.id),
+      status: String(s.status || "requested"),
+      scheduled_at: s.scheduled_at instanceof Date ? s.scheduled_at.toISOString() : s.scheduled_at ? String(s.scheduled_at) : null,
+      mentor_name: s.mentor_name || "Mentor session",
+      counterpart_name: isMentor ? (s.student_name || "Student") : (s.mentor_name || "Mentor session"),
+      role: isMentor ? "mentor" : "student"
+    };
+  });
 
   const stats = eligibility?.stats ?? null;
   const pct = stats ? Math.min(100, Math.max(0, Number(stats.pct) || 0)) : 0;
@@ -111,42 +129,57 @@ export default async function MentorshipPage() {
   return (
     <AppShell area="student" tenant={tenant} user={user}>
       <main className="mx-auto max-w-4xl px-4 sm:px-6">
-        <Meta>Connect · guidance from seniors</Meta>
-        <Display size="lg" className="mt-3">Learn from someone who remembers the first step.</Display>
-        <p className="narrative mt-4" style={{ color: "var(--text)" }}>
-          Browse guides, request a session, and get notified when someone picks it up.
-        </p>
+        <WorkspaceMasthead
+          kicker="Mentorship / guidance from seniors"
+          title="Learn from someone who remembers the first step."
+          lede="Browse guides, request a session, and get notified when someone picks it up."
+          meta={`${mentors.length} available ${mentors.length === 1 ? "guide" : "guides"} / ${sessions.length} ${sessions.length === 1 ? "request" : "requests"} in your history`}
+          tone="paper"
+          art="/storyloom/mentorship.png"
+          artAlt=""
+          stats={[
+            { value: mentors.length, label: "guides available" },
+            { value: sessions.length, label: "your requests" },
+            { value: pct, unit: "%", label: "of the path walked" }
+          ]}
+        />
 
         <ConnectTabs active="/student/mentorship" />
 
         {sessions.length > 0 && (
-          <section className="mt-10" aria-label="Your requests">
-            <Meta>Your requests · {sessions.length}</Meta>
+          <WorkspaceSection index="01" title="Sessions" note={`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"} on record.`}>
             <Timeline className="mt-5">
               {sessions.map((s) => {
                 const c = sessionCopy(s);
                 const when = s.status === "scheduled" ? fmtDateTime(s.scheduled_at) : fmtDate(s.scheduled_at);
+                const body = s.role === "mentor" && s.status === "requested"
+                  ? "A student asked for your time. Accept to put it on the calendar, or decline with a clear reason."
+                  : c.body;
                 return (
                   <TimelineItem
                     key={s.id}
                     state={c.state}
-                    title={s.mentor_name}
+                    title={s.counterpart_name}
                     meta={when || c.label}
-                    body={c.body}
-                    action={<StatusPill tone={c.pill}>{when ? `${c.label} · ${when}` : c.label}</StatusPill>}
+                    body={body}
+                    action={(
+                      <span className="inline-flex flex-wrap items-center justify-end gap-2">
+                        <StatusPill tone={c.pill}>{when ? `${c.label} / ${when}` : c.label}</StatusPill>
+                        <SessionActions session={s} />
+                      </span>
+                    )}
                   />
                 );
               })}
             </Timeline>
-          </section>
+          </WorkspaceSection>
         )}
 
-        <section className="mt-12" aria-label="Find a guide">
-          <Meta>Available guides · {mentors.length}</Meta>
-          <h2 className="h-product mt-2">Find a guide</h2>
-          <p className="narrative mt-3" style={{ color: "var(--text)" }}>
-            People who are already walking the path you want to explore.
-          </p>
+        <WorkspaceSection
+          index="02"
+          title="Find a guide"
+          note={`People who are already walking the path you want to explore. ${mentors.length} available.`}
+        >
           {mentors.length === 0 ? (
             <OnboardingState
               eyebrow="Mentors"
@@ -156,14 +189,13 @@ export default async function MentorshipPage() {
           ) : (
             <MentorsBrowser mentors={mentors} />
           )}
-        </section>
+        </WorkspaceSection>
 
-        <section className="mt-12 border-t pt-10" style={{ borderColor: "var(--line)" }} aria-label="Become a guide">
-          <Meta>The generational cycle</Meta>
-          <h2 className="h-product mt-2">Become a guide</h2>
-          <p className="narrative mt-3" style={{ color: "var(--text)" }}>
-            The next person you help may be where you were a year ago.
-          </p>
+        <WorkspaceSection
+          index="03"
+          title="Become a guide"
+          note="The next person you help may be where you were a year ago."
+        >
           {mentorRow ? (
             <p className="narrative mt-4" style={{ color: "var(--text)" }}>
               You already mentor. Juniors find you here — keep your expertise honest and your door open.
@@ -232,10 +264,9 @@ export default async function MentorshipPage() {
               </div>
             </div>
           )}
-        </section>
+        </WorkspaceSection>
 
-        <section className="mt-12 border-t pt-10" style={{ borderColor: "var(--line)" }} aria-label="Where next">
-          <Meta>Connect · keep going</Meta>
+        <WorkspaceSection index="04" title="Keep going" note="Three places the loop continues after a session.">
           <ol className="mt-2">
             <li className="border-b py-5 first:border-t" style={{ borderColor: "var(--line)" }}>
               <div className="flex flex-wrap items-baseline justify-between gap-2 px-2">
@@ -273,7 +304,7 @@ export default async function MentorshipPage() {
               </div>
             </li>
           </ol>
-        </section>
+        </WorkspaceSection>
       </main>
     </AppShell>
   );

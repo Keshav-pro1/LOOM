@@ -2,41 +2,38 @@ import Link from "next/link";
 import { PublicInformationPage } from "@/components/landing/PublicInformationPage";
 import { JsonLd, webPageSchema } from "@/components/seo/JsonLd";
 import { canonicalFor } from "@/lib/seo";
+import { legalConfig } from "@/lib/legal";
 
-// Pure static legal/contact copy: no database, no tenant, no request input.
-// Safe to serve from the CDN cache. The tenant-scoped public pages (/events,
-// /domains, /faq, /about) MUST stay dynamic -- they resolve their chapter from
-// the Host header, and a shared cache keyed by path would serve one chapter's
-// content to another.
-export const dynamic = "force-static";
-export const revalidate = 86400;
+// This page has no database, tenant, or request input of its own, but it is
+// rendered per request: the nonce-based CSP in middleware.js only stamps the
+// inline bootstrap scripts on dynamically rendered HTML. Prerendering it would
+// ship scripts with no nonce, and the browser would block them.
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Terms",
   description:
-    "The rules for L.O.O.M. accounts, acceptable use, submitted work, moderation, credentials, availability, and changes. Draft terms pending chapter review.",
+    "The rules for LOOM accounts, acceptable use, submitted work, moderation, credentials, availability, and changes.",
   ...canonicalFor("/terms"),
   openGraph: {
-    title: "Terms | L.O.O.M.",
+    title: "Terms | LOOM",
     description: "Account rules, acceptable use, submitted work, moderation, credentials, and service changes."
   }
 };
 
-const PLACEHOLDERS = {
-  legalEntity: "[LEGAL_ENTITY_NAME]",
-  contact: "[TERMS_CONTACT]",
-  governingLaw: "[GOVERNING_LAW_AND_VENUE]",
-  published: "2026-10-15"
-};
-
 export default function TermsPage() {
+  const legal = legalConfig();
+  const contact = legal.contactEmail
+    ? `${legal.contactName} (${legal.contactEmail})`
+    : `${legal.contactName} through the contact page`;
+
   return (
     <PublicInformationPage
       kicker="Terms"
       title="Terms of use."
-      lede="The rules for accounts, acceptable conduct, submitted work, moderation, credentials, availability, and changes. These are draft terms pending chapter review."
-      published={PLACEHOLDERS.published}
-      sections={[{"id": "agreement", "title": "Agreement"}, {"id": "eligibility-and-accounts", "title": "Eligibility and accounts"}, {"id": "acceptable-use", "title": "Acceptable use"}, {"id": "submitted-work-and-moderation", "title": "Submitted work and moderation"}, {"id": "credentials-and-verification", "title": "Credentials and verification"}, {"id": "availability-changes-and-termination", "title": "Availability, changes, and termination"}, {"id": "governing-terms", "title": "Governing terms"}]}
+      lede="The rules for accounts, acceptable conduct, submitted work, moderation, credentials, availability, and changes."
+      published={legal.published}
+      sections={[{"id": "agreement", "title": "Agreement"}, {"id": "eligibility-and-accounts", "title": "Eligibility and accounts"}, {"id": "acceptable-use", "title": "Acceptable use"}, {"id": "submitted-work-and-moderation", "title": "Submitted work and moderation"}, {"id": "credentials-and-verification", "title": "Credentials and verification"}, {"id": "availability-changes-and-termination", "title": "Availability, changes, and termination"}, {"id": "no-warranty-and-liability", "title": "No warranty and limitation of liability"}, {"id": "governing-terms", "title": "Governing terms"}]}
     >
       <JsonLd
         data={webPageSchema({
@@ -51,9 +48,9 @@ export default function TermsPage() {
           Agreement
         </h2>
         <p className="mt-3 text-sm leading-7" style={{ color: "var(--text-muted)" }}>
-          By creating an account or signing in, a member agrees to these terms with {PLACEHOLDERS.legalEntity}.
-          Questions about these terms can be sent to {PLACEHOLDERS.contact}. This page is an operational policy draft,
-          not legal advice.
+          By creating an account or signing in, a member agrees to these terms with {legal.operatorName}.
+          Questions about these terms can be sent to {contact}. This page describes the service&apos;s operating
+          rules; it is not legal advice.
         </p>
 
         <h2 id="eligibility-and-accounts" className="font-display mt-10 text-2xl font-medium sm:text-3xl" style={{ color: "var(--text)" }}>
@@ -81,7 +78,7 @@ export default function TermsPage() {
         </h2>
         <p className="mt-3 text-sm leading-7" style={{ color: "var(--text-muted)" }}>
           Members retain ownership of work they submit, subject to licenses already granted to third-party repositories
-          or publishers. By submitting material to L.O.O.M., the member permits the chapter to display, organize,
+          or publishers. By submitting material to LOOM, the member permits the chapter to display, organize,
           review, verify, moderate, hide, or remove that material for operating the service. Moderation flags are
           community signals; chapter administrators make the final decision.
         </p>
@@ -104,12 +101,31 @@ export default function TermsPage() {
           <li>Material changes will be published here with an updated publication date.</li>
         </ul>
 
+        <h2 id="no-warranty-and-liability" className="font-display mt-10 text-2xl font-medium sm:text-3xl" style={{ color: "var(--text)" }}>
+          No warranty and limitation of liability
+        </h2>
+        <p className="mt-3 text-sm leading-7" style={{ color: "var(--text-muted)" }}>
+          To the maximum extent permitted by applicable law, the service is provided &ldquo;as is&rdquo; and
+          &ldquo;as available&rdquo; without warranties of any kind, whether express or implied, including
+          fitness for a particular purpose, accuracy of member-submitted content, or uninterrupted
+          availability. The operator is not liable for indirect, incidental, special, consequential,
+          exemplary, or punitive damages, or for lost data, opportunities, or credentials, arising from
+          use of or inability to use the service.
+        </p>
+        <p className="mt-3 text-sm leading-7" style={{ color: "var(--text-muted)" }}>
+          Where liability cannot be excluded, the operator&rsquo;s total aggregate liability for all claims
+          relating to the service is limited to {legal.liabilityCap}. Nothing in these terms excludes
+          liability that applicable law does not permit to be excluded. Member-submitted work, external
+          links, and third-party services remain the responsibility of the member or provider that supplied
+          them.
+        </p>
+
         <h2 id="governing-terms" className="font-display mt-10 text-2xl font-medium sm:text-3xl" style={{ color: "var(--text)" }}>
           Governing terms
         </h2>
         <p className="mt-3 text-sm leading-7" style={{ color: "var(--text-muted)" }}>
-          These draft terms are governed by {PLACEHOLDERS.governingLaw}. The chapter must complete legal review before
-          treating them as final.
+          These terms are governed by {legal.governingLaw}. A chapter may adopt additional local policies, but
+          they do not replace these terms.
         </p>
 
         <p className="mt-10 text-sm leading-7" style={{ color: "var(--text-muted)" }}>

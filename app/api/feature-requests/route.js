@@ -1,9 +1,11 @@
+import { scope } from "@/lib/tenant-scope";
 import { z } from "zod";
 import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit, notify } from "@/lib/auth-server";
 import { requireCan, toGuardResponse } from "@/lib/requirePermission";
 import { listFeatureRequests, screenFeatureRequest } from "@/lib/feature-requests";
 import { syncFeatureRequestToGitHub } from "@/lib/github-issues";
+import { appBaseUrl } from "@/lib/app-url";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 const createSchema = z.object({
@@ -47,11 +49,11 @@ export async function POST(request) {
     row,
     tenantId: tenant?.id ?? null,
     tenantName: tenant?.name,
-    appUrl: process.env.NEXT_PUBLIC_APP_URL,
+    appUrl: appBaseUrl(),
   });
   const saved = synced?.row || row;
   // notify admins
-  const admins = await sql`SELECT user_id FROM profiles WHERE role = 'admin' AND (tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL) LIMIT 10`;
+  const admins = await sql`SELECT user_id FROM profiles WHERE role = 'admin' AND tenant_id = ${scope(tenant?.id ?? null)}::uuid LIMIT 10`;
   for (const a of admins) {
     await notify({ sql, tenantId: tenant?.id, userId: a.user_id, type: "feature_request", title: `New feature idea: ${body.title}`, body: `From ${ctx.profile?.name || user.id}`, link: "/admin/feature-requests" });
   }

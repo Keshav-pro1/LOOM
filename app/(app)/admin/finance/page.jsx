@@ -1,12 +1,16 @@
+import { scope } from "@/lib/tenant-scope";
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { Wallet, PiggyBank, Handshake, Clock3, Check, X, Plus } from "lucide-react";
+import { Check, X, Plus, BadgeCheck } from "lucide-react";
 import { getRequestContext, writeAudit } from "@/lib/auth-server";
+import { validateUpload, buildStoragePath } from "@/lib/media";
+import { uploadObject } from "@/lib/storage";
 import { AppShell } from "@/components/AppShell";
-import { PageHeader } from "@/components/ui";
-import { Meta } from "@/components/loom/primitives";
+import { WorkspaceMasthead, WorkspaceSection, WorkspaceEmpty } from "@/components/loom/WorkspaceMasthead";
 import { ExpenseStatusDonut, SponsorshipPipelineBars, MonthlyExpenseBars } from "@/components/admin/FinanceCharts";
+import "../_components/admin-ledger.css";
 
 async function decideExpense(formData) {
   "use server";
@@ -19,27 +23,116 @@ async function decideExpense(formData) {
   await sql`
     UPDATE expenses SET status = ${decision}, decided_by = ${user.id}
     WHERE id = ${id} AND status = 'proposed'
-      AND (tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL)
+      AND tenant_id = ${scope(tenant?.id ?? null)}::uuid
   `;
   await writeAudit({ sql, actorId: user.id, tenantId: tenant?.id, action: `expense_${decision}`, resource: "expense", resourceId: id });
   revalidatePath("/admin/finance");
+}
+
+async function markExpensePaid(formData) {
+  "use server";
+  const ctx = await getRequestContext();
+  if (ctx.error || ctx.profile.role !== "admin") return;
+  const { sql, user, tenant } = ctx;
+  const id = String(formData.get("id") || "");
+  if (!id) return;
+  const [row] = await sql`
+    UPDATE expenses SET status = 'paid', paid_at = now(), paid_by = ${user.id}
+    WHERE id = ${id} AND status = 'approved'
+      AND tenant_id = ${scope(tenant?.id ?? null)}::uuid
+    RETURNING id
+  `;
+  if (!row) return;
+  await writeAudit({
+    sql, actorId: user.id, tenantId: tenant?.id, action: "expense_paid",
+    resource: "expense", resourceId: id, after: { status: "paid" }
+  });
+  revalidatePath("/admin/finance");
+}
+
+async function updateSponsorship(formData) {
+  "use server";
+  const ctx = await getRequestContext();
+  if (ctx.error || ctx.profile.role !== "admin") return;
+  const { sql, user, tenant } = ctx;
+  const id = String(formData.get("id") || "");
+  const status = String(formData.get("status") || "");
+  if (!id || !["pipeline", "committed", "received"].includes(status)) return;
+  const [row] = await sql`
+    UPDATE sponsorships SET status = ${status}, updated_at = now(), updated_by = ${user.id}
+    WHERE id = ${id} AND tenant_id = ${scope(tenant?.id ?? null)}::uuid
+    RETURNING id, status
+  `;
+  if (!row) return;
+  await writeAudit({
+    sql, actorId: user.id, tenantId: tenant?.id, action: "updated_sponsorship",
+    resource: "sponsorship", resourceId: id, after: { status }
+  });
+  revalidatePath("/admin/finance");
+  revalidatePath("/student/sponsors");
 }
 
 async function proposeExpense(formData) {
   "use server";
   const ctx = await getRequestContext();
   if (ctx.error || !["dept_lead", "vertical_lead", "admin"].includes(ctx.profile.role)) return;
-  const { sql, user, tenant } = ctx;
+  const { sql, user, tenant, profile } = ctx;
   const amount = Number(formData.get("amount"));
   const note = String(formData.get("note") || "").slice(0, 1000);
   const headId = String(formData.get("headId") || "") || null;
   const departmentId = String(formData.get("departmentId") || "") || null;
+  const receipt = formData.get("receipt");
   if (!Number.isFinite(amount) || amount <= 0 || note.length < 3) return;
+
+  const [head] = headId
+    ? await sql`SELECT id, vertical, department_id FROM budget_heads WHERE id = ${headId} AND tenant_id = ${scope(tenant?.id ?? null)}::uuid LIMIT 1`
+    : [];
+  if (headId && !head) return;
+  const targetDepartmentId = head?.department_id || departmentId;
+  if (head?.department_id && departmentId && head.department_id !== departmentId) return;
+  if (profile.role !== "admin" && !targetDepartmentId) return;
+  if (profile.role === "vertical_lead") {
+    if (!targetDepartmentId) return;
+    const [dept] = await sql`SELECT vertical FROM departments WHERE id = ${targetDepartmentId} AND tenant_id = ${scope(tenant?.id ?? null)}::uuid LIMIT 1`;
+    if (!dept || dept.vertical !== profile.vertical) return;
+  } else if (profile.role !== "admin") {
+    const leads = (profile.memberships || []).some(
+      (m) => m.department_id === targetDepartmentId && m.level === "dept_lead"
+    );
+    if (!leads) return;
+  }
+
+  const id = randomUUID();
+  let receiptMeta = null;
+  if (receipt && typeof receipt !== "string" && receipt.size > 0) {
+    const check = validateUpload({ name: receipt.name, mime: receipt.type, size: receipt.size });
+    if (!check.ok) return;
+    const path = buildStoragePath({
+      scope: "finance",
+      tenantId: tenant?.id,
+      entityId: id,
+      fileId: randomUUID(),
+      version: 1,
+      fileName: receipt.name
+    });
+    await uploadObject({
+      path,
+      body: Buffer.from(await receipt.arrayBuffer()),
+      contentType: check.mime
+    });
+    receiptMeta = { path, name: String(receipt.name).slice(0, 200), mime: check.mime, size: receipt.size };
+  }
+
   await sql`
-    INSERT INTO expenses (tenant_id, head_id, department_id, amount, note, status, created_by)
-    VALUES (${tenant?.id ?? null}, ${headId}, ${departmentId}, ${amount}, ${note}, 'proposed', ${user.id})
+    INSERT INTO expenses
+      (id, tenant_id, head_id, department_id, amount, note, status, created_by,
+       receipt_path, receipt_name, receipt_mime, receipt_size, receipt_uploaded_by)
+    VALUES
+      (${id}::uuid, ${tenant?.id ?? null}, ${headId}, ${targetDepartmentId}, ${amount}, ${note}, 'proposed', ${user.id},
+       ${receiptMeta?.path ?? null}, ${receiptMeta?.name ?? null}, ${receiptMeta?.mime ?? null},
+       ${receiptMeta?.size ?? null}, ${receiptMeta ? user.id : null})
   `;
-  await writeAudit({ sql, actorId: user.id, tenantId: tenant?.id, action: "proposed_expense", resource: "expense", resourceId: null, after: { amount, note } });
+  await writeAudit({ sql, actorId: user.id, tenantId: tenant?.id, action: "proposed_expense", resource: "expense", resourceId: id, after: { amount, note } });
   revalidatePath("/admin/finance");
 }
 
@@ -51,11 +144,20 @@ async function addBudgetHead(formData) {
   const name = String(formData.get("name") || "").slice(0, 200);
   const allocated = Number(formData.get("allocated") || 0);
   const vertical = String(formData.get("vertical") || "") || null;
+  const departmentId = String(formData.get("departmentId") || "") || null;
   if (name.length < 2 || !Number.isFinite(allocated) || allocated < 0) return;
   if (vertical && !["technical", "non_technical"].includes(vertical)) return;
+  if (departmentId) {
+    const [dept] = await sql`
+      SELECT id FROM departments
+      WHERE id = ${departmentId} AND tenant_id = ${scope(tenant?.id ?? null)}::uuid
+      LIMIT 1
+    `;
+    if (!dept) return;
+  }
   const [row] = await sql`
-    INSERT INTO budget_heads (tenant_id, name, allocated, vertical)
-    VALUES (${tenant?.id ?? null}, ${name}, ${allocated}, ${vertical})
+    INSERT INTO budget_heads (tenant_id, name, allocated, vertical, department_id)
+    VALUES (${tenant?.id ?? null}, ${name}, ${allocated}, ${vertical}, ${departmentId})
     RETURNING *
   `;
   await writeAudit({ sql, actorId: user.id, tenantId: tenant?.id, action: "created_budget_head", resource: "budget_head", resourceId: row.id, after: { name, allocated } });
@@ -91,19 +193,20 @@ export default async function AdminFinancePage() {
 
   const [stats] = await sql`
     SELECT
-      (SELECT COALESCE(SUM(allocated),0)::numeric FROM budget_heads WHERE tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL) AS allocated,
-      (SELECT COALESCE(SUM(amount),0)::numeric FROM expenses WHERE status = 'approved' AND (tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)) AS spent,
-      (SELECT COUNT(*)::int FROM expenses WHERE status = 'proposed' AND (tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)) AS pending,
-      (SELECT COALESCE(SUM(amount),0)::numeric FROM sponsorships WHERE status = 'received' AND (tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)) AS sponsorships
+      (SELECT COALESCE(SUM(allocated),0)::numeric FROM budget_heads WHERE tenant_id = ${scope(tid)}::uuid) AS allocated,
+      (SELECT COALESCE(SUM(amount),0)::numeric FROM expenses WHERE status IN ('approved','paid') AND tenant_id = ${scope(tid)}::uuid) AS spent,
+      (SELECT COUNT(*)::int FROM expenses WHERE status = 'proposed' AND tenant_id = ${scope(tid)}::uuid) AS pending,
+      (SELECT COALESCE(SUM(amount),0)::numeric FROM sponsorships WHERE status = 'received' AND tenant_id = ${scope(tid)}::uuid) AS sponsorships
   `;
 
   const heads = await sql`
-    SELECT h.*,
+    SELECT h.*, d.name AS department_name,
       COALESCE((SELECT SUM(e.amount) FROM expenses e
-        WHERE e.head_id = h.id AND e.status = 'approved'
-          AND (e.tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)), 0)::numeric AS spent
+        WHERE e.head_id = h.id AND e.status IN ('approved','paid')
+          AND e.tenant_id = ${scope(tid)}::uuid), 0)::numeric AS spent
     FROM budget_heads h
-    WHERE (h.tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)
+    LEFT JOIN departments d ON d.id = h.department_id
+    WHERE h.tenant_id = ${scope(tid)}::uuid
     ORDER BY h.name ASC
   `;
   const expenses = await sql`
@@ -112,24 +215,26 @@ export default async function AdminFinancePage() {
     LEFT JOIN budget_heads h ON h.id = e.head_id
     LEFT JOIN departments d ON d.id = e.department_id
     LEFT JOIN profiles p ON p.user_id = e.created_by
-    WHERE (e.tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)
+    WHERE e.tenant_id = ${scope(tid)}::uuid
     ORDER BY e.created_at DESC LIMIT 100
   `;
   const sponsorships = await sql`
     SELECT * FROM sponsorships
-    WHERE (tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)
+    WHERE tenant_id = ${scope(tid)}::uuid
     ORDER BY created_at DESC LIMIT 100
   `;
   const departments = await sql`
     SELECT id, name FROM departments
-    WHERE (tenant_id = ${tid}::uuid OR ${tid}::uuid IS NULL)
+    WHERE tenant_id = ${scope(tid)}::uuid
     ORDER BY name ASC
   `;
 
   const pending = expenses.filter((e) => e.status === "proposed");
+  const decided = expenses.filter((e) => e.status !== "proposed");
   const expenseStatus = [
     { name: "proposed", value: expenses.filter((e) => e.status === "proposed").length },
     { name: "approved", value: expenses.filter((e) => e.status === "approved").length },
+    { name: "paid", value: expenses.filter((e) => e.status === "paid").length },
     { name: "rejected", value: expenses.filter((e) => e.status === "rejected").length },
   ];
   const sponsorshipPipeline = ["pipeline", "committed", "received"].map((s) => ({
@@ -151,181 +256,259 @@ export default async function AdminFinancePage() {
     if (monthlyMap.has(k)) monthlyMap.get(k).value += Number(e.amount || 0);
   }
   const monthlySpend = [...monthlyMap.values()];
-
-  const input = "w-full rounded-xl border px-3 py-2.5 text-sm outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--accent)_14%,transparent)]";
-  const inputStyle = { borderColor: "var(--line)", background: "var(--bg)", color: "var(--text)" };
+  const inr = (n) => `₹${Number(n ?? 0).toLocaleString("en-IN")}`;
 
   return (
     <AppShell area="admin" tenant={tenant} user={user}>
       <main className="mx-auto max-w-6xl px-4 pb-14 sm:px-6">
-        <PageHeader kicker={`Finance · ₹${Number(stats?.allocated ?? 0).toLocaleString("en-IN")} allocated · ₹${Number(stats?.spent ?? 0).toLocaleString("en-IN")} spent`} title="Finance" desc="Budget heads, the approval queue, and the sponsorship pipeline — all scoped to this chapter." />
-        <p className="meta -mt-6 mb-6"><Link href="/admin" prefetch={false} className="hover:underline" style={{ color: "var(--accent)" }}>← Back to overview</Link></p>
+        <WorkspaceMasthead
+          kicker={`Finance / ${inr(stats?.allocated)} allocated / ${inr(stats?.spent)} spent`}
+          title="Finance"
+          lede="Budget heads, the approval queue, and the sponsorship pipeline — all scoped to this chapter."
+          meta={`${inr(stats?.allocated)} allocated → ${inr(stats?.spent)} spent / ${pending.length} awaiting decision`}
+          tone="ledger"
+          art="/storyloom/opportunity.png"
+          artAlt=""
+          stats={[
+            { value: inr(stats?.allocated), label: "allocated" },
+            { value: inr(stats?.spent), label: "spent / approved" },
+            { value: stats?.pending ?? 0, label: "pending expenses" },
+            { value: inr(stats?.sponsorships), label: "sponsorships received" }
+          ]}
+          actions={
+            <Link href="/admin" prefetch={false} style={{ color: "var(--accent)" }} className="aled-meta">
+              ← Back to overview
+            </Link>
+          }
+        />
 
-        <div className="mb-6 grid gap-3 sm:grid-cols-4">
-          {[
-            { label: "Allocated", value: `₹${Number(stats?.allocated ?? 0).toLocaleString("en-IN")}`, icon: PiggyBank, sub: "budget" },
-            { label: "Spent", value: `₹${Number(stats?.spent ?? 0).toLocaleString("en-IN")}`, icon: Wallet, sub: "approved" },
-            { label: "Pending", value: stats?.pending ?? 0, icon: Clock3, sub: "awaiting decision" },
-            { label: "Sponsorships", value: `₹${Number(stats?.sponsorships ?? 0).toLocaleString("en-IN")}`, icon: Handshake, sub: "received" },
-          ].map((s) => (
-            <div key={s.label} className="flex items-center gap-3 rounded-2xl border p-3.5" style={{ borderColor: s.label === "Pending" && (stats?.pending ?? 0) > 0 ? "color-mix(in srgb, var(--accent) 22%, transparent)" : "var(--line)", background: s.label === "Pending" && (stats?.pending ?? 0) > 0 ? "color-mix(in srgb, var(--accent) 6%, var(--bg-elevated))" : "var(--bg-elevated)" }}>
-              <span className="inline-flex size-8 items-center justify-center rounded-full border" style={{ borderColor: "var(--line)", background: "var(--bg)", color: "var(--text-muted)" }}><s.icon size={14} /></span>
-              <div><p className="font-mono text-sm font-semibold" style={{ color: "var(--text)" }}>{s.value}</p><p className="meta">{s.label} · {s.sub}</p></div>
-            </div>
-          ))}
-        </div>
-        <div className="mb-6 flex items-center gap-2 rounded-full border px-3 py-2 text-[11px] font-bold tracking-widest" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)", color: "var(--text-muted)" }}>
-          <span>ALLOCATED ₹{Number(stats?.allocated ?? 0).toLocaleString("en-IN")}</span><span aria-hidden="true">↓</span><span>COMMITTED</span><span aria-hidden="true">↓</span><span>SPENT ₹{Number(stats?.spent ?? 0).toLocaleString("en-IN")}</span><span className="ml-auto hidden sm:inline meta normal-case tracking-normal">waterfall · heads below</span>
-        </div>
-
-        <section className="grid gap-4 lg:grid-cols-3" aria-label="Finance visuals">
-          <ExpenseStatusDonut data={expenseStatus} />
-          <MonthlyExpenseBars data={monthlySpend} />
-          <SponsorshipPipelineBars data={sponsorshipPipeline} />
-        </section>
-
-        <section aria-label="Budget heads">
-          <div className="flex items-baseline gap-2">
-            <Meta>Budget heads · burn rate</Meta>
-            <span className="meta ml-auto">{heads.length} heads</span>
+        <WorkspaceSection index="01" title="Cash flow" note="Expense status, the last six months of approved spend, and the sponsorship pipeline.">
+          <div className="grid gap-4 lg:grid-cols-3">
+            <ExpenseStatusDonut data={expenseStatus} />
+            <MonthlyExpenseBars data={monthlySpend} />
+            <SponsorshipPipelineBars data={sponsorshipPipeline} />
           </div>
-          <form action={addBudgetHead} className="mt-3 flex flex-wrap gap-2 rounded-2xl border p-3" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }} aria-label="Create budget head">
-            <input name="name" required minLength={2} maxLength={200} placeholder="New head, e.g. Events" className={input} style={{ ...inputStyle, maxWidth: 220 }} aria-label="Head name" />
-            <input name="allocated" type="number" min={0} step="any" placeholder="Allocated (₹)" className={input} style={{ ...inputStyle, maxWidth: 160 }} aria-label="Allocated amount" />
-            <select name="vertical" className={input} style={{ ...inputStyle, maxWidth: 170 }} aria-label="Vertical scope" defaultValue="">
-              <option value="">Society-wide</option>
-              <option value="technical">Technical</option>
-              <option value="non_technical">Non-technical</option>
-            </select>
-            <button className="btn-ink inline-flex items-center gap-1 !py-2 text-sm"><Plus size={14} /> Add head</button>
-          </form>
-          {heads.length === 0 ? (
-            <div className="mt-4 rounded-2xl border border-dashed p-8 text-center" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-              <p className="narrative">No budget heads yet. Add the first one — expenses and burn bars light up immediately.</p>
-            </div>
+        </WorkspaceSection>
+
+        <WorkspaceSection
+          index="02"
+          title="Approval queue"
+          note="Proposed → approved / rejected. Every decision is audited."
+          action={<span className="aled-meta">{pending.length} awaiting</span>}
+        >
+          {pending.length === 0 ? (
+            <WorkspaceEmpty title="Nothing waiting" body="Proposed expenses from leads land here for admin approval." />
           ) : (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <ul className="aled-ledger" style={{ listStyle: "none", margin: "0.9rem 0 0", padding: 0 }}>
+              {pending.map((e) => (
+                <li key={e.id} className="aled-row" style={{ "--aled-cols": "minmax(0, 1fr) auto" }}>
+                  <div className="aled-copy">
+                    <span className="aled-title">{inr(e.amount)} · {e.note}</span>
+                    <p className="aled-sub">
+                      {e.head_name || "no head"}
+                      {e.department_name ? ` · ${e.department_name}` : ""}
+                      {e.proposed_by_name ? ` · by ${e.proposed_by_name}` : ""}
+                      {" · "}
+                      {new Date(e.created_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}
+                    </p>
+                  </div>
+                  <div className="aled-actions">
+                    <form action={decideExpense}>
+                      <input type="hidden" name="id" value={e.id} />
+                      <input type="hidden" name="decision" value="approved" />
+                      <button className="btn-ink inline-flex items-center gap-1 !py-1.5 text-xs">
+                        <Check size={12} aria-hidden="true" /> Approve
+                      </button>
+                    </form>
+                    <form action={decideExpense}>
+                      <input type="hidden" name="id" value={e.id} />
+                      <input type="hidden" name="decision" value="rejected" />
+                      <button className="inline-flex items-center gap-1 border px-3 py-1.5 text-xs font-semibold" style={{ borderColor: "var(--line)", color: "var(--text-muted)" }}>
+                        <X size={12} aria-hidden="true" /> Reject
+                      </button>
+                    </form>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {decided.length > 0 && (
+            <div>
+              <p className="aled-meta">Recent decisions — cap 10</p>
+              <ul className="aled-ledger" style={{ listStyle: "none", margin: "0.5rem 0 0", padding: 0 }}>
+                {decided.slice(0, 10).map((e) => (
+                  <li key={e.id} className="aled-row" style={{ "--aled-cols": "minmax(0, 1fr) auto" }}>
+                    <div className="aled-copy">
+                      <span className="aled-title">{inr(e.amount)} — {e.note}</span>
+                      <p className="aled-sub">
+                        {e.status === "paid" && e.paid_at
+                          ? `Paid ${new Date(e.paid_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}`
+                          : e.status}
+                        {e.receipt_name ? ` / receipt: ${e.receipt_name}` : ""}
+                      </p>
+                    </div>
+                    <div className="aled-actions">
+                      <span className={`aled-tag ${e.status === "approved" || e.status === "paid" ? "aled-tag--success" : "aled-tag--danger"}`}>{e.status}</span>
+                      {e.status === "approved" && (
+                        <form action={markExpensePaid}>
+                          <input type="hidden" name="id" value={e.id} />
+                          <button className="btn-ink inline-flex items-center gap-1 !py-1.5 text-xs">
+                            <BadgeCheck size={12} aria-hidden="true" /> Mark paid
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </WorkspaceSection>
+
+        <WorkspaceSection
+          index="03"
+          title="Budget heads"
+          note="Allocation against approved burn; the bar turns amber past 70% and danger past 90%."
+          action={<span className="aled-meta">{heads.length} heads</span>}
+        >
+          <form action={addBudgetHead} className="aled-form" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(12rem, 1fr))" }} aria-label="Create budget head">
+            <label>Name
+              <input name="name" required minLength={2} maxLength={200} placeholder="New head, e.g. Events" className="aled-field" />
+            </label>
+            <label>Allocated (₹)
+              <input name="allocated" type="number" min={0} step="any" placeholder="0" className="aled-field" />
+            </label>
+            <label>Vertical scope
+              <select name="vertical" className="aled-field" defaultValue="">
+                <option value="">Society-wide</option>
+                <option value="technical">Technical</option>
+                <option value="non_technical">Non-technical</option>
+              </select>
+            </label>
+            <label>Owning department
+              <select name="departmentId" className="aled-field" defaultValue="">
+                <option value="">Society-wide / no department</option>
+                {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </label>
+            <button className="btn-ink inline-flex items-center justify-center gap-1.5" style={{ alignSelf: "end" }}>
+              <Plus size={14} aria-hidden="true" /> Add head
+            </button>
+          </form>
+
+          {heads.length === 0 ? (
+            <WorkspaceEmpty title="No budget heads yet" body="Add the first one — expenses and burn bars light up immediately." />
+          ) : (
+            <ul className="aled-ledger" style={{ listStyle: "none", margin: "0.9rem 0 0", padding: 0 }}>
               {heads.map((h) => {
                 const spent = Number(h.spent);
                 const allocated = Number(h.allocated);
                 const pct = allocated > 0 ? Math.min(100, Math.round((spent / allocated) * 100)) : 0;
                 const left = allocated - spent;
                 return (
-                  <div key={h.id} className="rounded-2xl border p-4" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>{h.name}</p>
-                      <span className="meta rounded-full border px-2 py-0.5" style={{ borderColor: "var(--line)" }}>{h.vertical || "society"}</span>
+                  <li key={h.id} className="aled-row" style={{ "--aled-cols": "minmax(0, 1fr) auto" }}>
+                    <div className="aled-copy">
+                      <span className="aled-title">{h.name}</span>
+                      <p className="aled-sub">
+                        {h.vertical || "society"} - {inr(allocated)} allocated - {inr(spent)} spent -{" "}
+                        <span style={{ color: left < 0 ? "var(--danger)" : "var(--text-muted)" }}>{inr(left)} left</span>
+                        {h.department_name ? ` - ${h.department_name}` : ""}
+                      </p>
+                      <span className="aled-meter" aria-hidden="true">
+                        <span className={pct > 90 ? "is-danger" : ""} style={{ width: `${pct}%` }} />
+                      </span>
                     </div>
-                    <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
-                      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct > 90 ? "var(--danger)" : pct > 70 ? "#f59e0b" : "var(--accent)" }} />
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-3 text-xs" style={{ color: "var(--text-muted)" }}>
-                      <span>₹{allocated.toLocaleString("en-IN")} allocated</span>
-                      <span>· ₹{spent.toLocaleString("en-IN")} spent · {pct}%</span>
-                      <span className="ml-auto font-medium" style={{ color: left < 0 ? "var(--danger)" : "var(--text)" }}>₹{left.toLocaleString("en-IN")} left</span>
-                    </div>
-                  </div>
+                    <span className="aled-value">{pct}%</span>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
           )}
-        </section>
+        </WorkspaceSection>
 
-        <section className="mt-8" aria-label="Pending expenses">
-          <Meta>{pending.length} expense{pending.length === 1 ? "" : "s"} awaiting decision · proposed → approved / rejected</Meta>
-          {pending.length === 0 ? (
-            <div className="mt-3 rounded-2xl border border-dashed p-8 text-center" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-              <p className="narrative">Nothing waiting. Proposed expenses from leads land here for admin approval.</p>
-            </div>
+        <WorkspaceSection
+          index="04"
+          title="Sponsorship pipeline"
+          note="Pipeline → committed → received. Amounts are the money in flight, not guesses."
+          action={<span className="aled-meta">{sponsorships.length} sponsors</span>}
+        >
+          {sponsorships.length === 0 ? (
+            <WorkspaceEmpty title="No sponsors yet" body="Add the first conversation — the pipeline becomes a ledger." />
           ) : (
-            <ul className="mt-3 space-y-3">
-              {pending.map((e) => (
-                <li key={e.id} className="flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center sm:justify-between" style={{ borderColor: "color-mix(in srgb, var(--accent) 18%, var(--line))", background: "var(--bg-elevated)" }}>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold" style={{ color: "var(--text)" }}>₹{Number(e.amount).toLocaleString("en-IN")} · {e.note}</span>
-                    <span className="meta flex flex-wrap gap-1.5">{e.head_name || "no head"}{e.department_name ? ` · ${e.department_name}` : ""}{e.proposed_by_name ? ` · by ${e.proposed_by_name}` : ""} · {new Date(e.created_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}</span>
-                  </span>
-                  <span className="flex shrink-0 gap-2">
-                    <form action={decideExpense}><input type="hidden" name="id" value={e.id} /><input type="hidden" name="decision" value="approved" /><button className="inline-flex items-center gap-1 rounded-full px-3.5 py-1.5 text-xs font-semibold" style={{ background: "var(--text)", color: "var(--bg)" }}><Check size={12} /> Approve</button></form>
-                    <form action={decideExpense}><input type="hidden" name="id" value={e.id} /><input type="hidden" name="decision" value="rejected" /><button className="inline-flex items-center gap-1 rounded-full border px-3.5 py-1.5 text-xs font-semibold" style={{ borderColor: "var(--line)", color: "var(--text-muted)" }}><X size={12} /> Reject</button></form>
-                  </span>
+            <ul className="aled-ledger" style={{ listStyle: "none", margin: "0.9rem 0 0", padding: 0 }}>
+              {sponsorships.map((s) => (
+                <li key={s.id} className="aled-row" style={{ "--aled-cols": "minmax(0, 1fr) auto" }}>
+                  <div className="aled-copy">
+                    <span className="aled-title">{s.name}</span>
+                    <p className="aled-sub">{inr(s.amount)}{s.contact ? ` · ${s.contact}` : ""}</p>
+                  </div>
+                  <form action={updateSponsorship} className="aled-actions">
+                    <input type="hidden" name="id" value={s.id} />
+                    <select name="status" defaultValue={s.status} aria-label={`Status for ${s.name}`} className="aled-field" style={{ width: "auto" }}>
+                      <option value="pipeline">pipeline</option>
+                      <option value="committed">committed</option>
+                      <option value="received">received</option>
+                    </select>
+                    <button className="rounded-lg border px-3 py-1.5 text-xs font-semibold" style={{ borderColor: "var(--line)", color: "var(--text)" }}>
+                      Save
+                    </button>
+                  </form>
                 </li>
               ))}
             </ul>
           )}
-          {expenses.filter((e) => e.status !== "proposed").length > 0 && (
-            <div className="mt-4 overflow-hidden rounded-2xl border" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-              <p className="meta border-b px-4 py-2" style={{ borderColor: "var(--line)" }}>Recent decisions · cap 10</p>
-              {expenses.filter((e) => e.status !== "proposed").slice(0, 10).map((e) => (
-                <div key={e.id} className="flex items-baseline justify-between gap-3 border-b px-4 py-2.5 last:border-b-0" style={{ borderColor: "var(--line)" }}>
-                  <span className="truncate text-sm" style={{ color: "var(--text-muted)" }}>₹{Number(e.amount).toLocaleString("en-IN")} · {e.note}</span>
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs capitalize" style={{ borderColor: e.status === "approved" ? "color-mix(in srgb, #16a34a 18%, transparent)" : "var(--line)", background: e.status === "approved" ? "color-mix(in srgb, #16a34a 10%, var(--bg))" : "var(--bg)", color: e.status === "approved" ? "#16a34a" : "var(--text-muted)" }}>{e.status === "approved" ? <Check size={10} /> : <X size={10} />} {e.status}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
 
-        <div className="mt-8 grid gap-8 lg:grid-cols-2">
-          <section aria-label="Propose expense">
-            <Meta>Propose an expense</Meta>
-            <form action={proposeExpense} className="mt-3 grid gap-3 rounded-2xl border p-5" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-              <div className="grid grid-cols-2 gap-3">
-                <input name="amount" type="number" min="1" step="any" required placeholder="Amount (₹)" className={input} style={inputStyle} aria-label="Amount" />
-                <input name="note" required minLength={3} maxLength={1000} placeholder="What is this for?" className={input} style={inputStyle} aria-label="Note" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <select name="headId" className={input} style={inputStyle} aria-label="Budget head" defaultValue="">
-                  <option value="">No budget head</option>
-                  {heads.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-                </select>
-                <select name="departmentId" className={input} style={inputStyle} aria-label="Department" defaultValue="">
-                  <option value="">Society-wide</option>
-                  {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                </select>
-              </div>
-              <button className="btn-ink !py-2 text-sm">Propose expense</button>
-            </form>
-          </section>
+          <form action={addSponsorship} className="aled-form" style={{ marginTop: "1.2rem", gridTemplateColumns: "repeat(auto-fit, minmax(11rem, 1fr))" }}>
+            <p className="aled-panel-title" style={{ gridColumn: "1 / -1", margin: 0 }}>
+              Add a sponsor
+            </p>
+            <label>Sponsor name
+              <input name="name" required minLength={2} maxLength={200} placeholder="Sponsor name" className="aled-field" />
+            </label>
+            <label>Amount (₹)
+              <input name="amount" type="number" min="0" step="any" defaultValue={0} className="aled-field" />
+            </label>
+            <label>Status
+              <select name="status" className="aled-field" defaultValue="pipeline">
+                <option value="pipeline">pipeline</option>
+                <option value="committed">committed</option>
+                <option value="received">received</option>
+              </select>
+            </label>
+            <label>Contact
+              <input name="contact" maxLength={300} placeholder="Contact" className="aled-field" />
+            </label>
+            <button className="btn-ink !py-2 text-sm" style={{ gridColumn: "1 / -1" }}>Add sponsor</button>
+          </form>
+        </WorkspaceSection>
 
-          <section aria-label="Sponsorship pipeline">
-            <Meta>Sponsorship pipeline · pipeline → committed → received</Meta>
-            {sponsorships.length === 0 ? (
-              <div className="mt-3 rounded-2xl border border-dashed p-8 text-center" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-                <p className="narrative">No sponsors yet. Add the first conversation — the pipeline becomes a ledger.</p>
-              </div>
-            ) : (
-              <ul className="mt-3 divide-y overflow-hidden rounded-2xl border" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-                {sponsorships.map((s) => {
-                  const tone = { pipeline: "var(--text-muted)", committed: "#b45309", received: "#16a34a" }[s.status] || "var(--text-muted)";
-                  return (
-                    <li key={s.id} className="flex items-baseline justify-between gap-3 p-4">
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold" style={{ color: "var(--text)" }}>{s.name}</span>
-                        <span className="meta">₹{Number(s.amount).toLocaleString("en-IN")}{s.contact ? ` · ${s.contact}` : ""}</span>
-                      </span>
-                      <span className="inline-flex shrink-0 rounded-full border px-2.5 py-1 text-xs font-medium capitalize" style={{ borderColor: "var(--line)", background: "var(--bg)", color: tone }}>{s.status}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            <form action={addSponsorship} className="mt-4 grid gap-3 rounded-2xl border p-5" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
-              <strong className="text-sm" style={{ color: "var(--text)" }}>Add a sponsor</strong>
-              <input name="name" required minLength={2} maxLength={200} placeholder="Sponsor name" className={input} style={inputStyle} aria-label="Sponsor name" />
-              <div className="grid grid-cols-3 gap-3">
-                <input name="amount" type="number" min="0" step="any" defaultValue={0} className={input} style={inputStyle} aria-label="Amount" />
-                <select name="status" className={input} style={inputStyle} aria-label="Status" defaultValue="pipeline">
-                  <option value="pipeline">pipeline</option>
-                  <option value="committed">committed</option>
-                  <option value="received">received</option>
-                </select>
-                <input name="contact" maxLength={300} placeholder="Contact" className={input} style={inputStyle} aria-label="Contact" />
-              </div>
-              <button className="btn-ink !py-2 text-sm">Add sponsor</button>
-            </form>
-          </section>
-        </div>
+        <WorkspaceSection index="05" title="Propose an expense" note="Leads propose; admins decide in the queue above.">
+          <form action={proposeExpense} className="aled-form" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(12rem, 1fr))" }}>
+            <label>Amount (₹)
+              <input name="amount" type="number" min="1" step="any" required placeholder="Amount (₹)" className="aled-field" />
+            </label>
+            <label>What is this for?
+              <input name="note" required minLength={3} maxLength={1000} placeholder="What is this for?" className="aled-field" />
+            </label>
+            <label>Budget head
+              <select name="headId" className="aled-field" defaultValue="">
+                <option value="">No budget head</option>
+                {heads.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+              </select>
+            </label>
+            <label>Department
+              <select name="departmentId" className="aled-field" defaultValue="">
+                <option value="">Society-wide</option>
+                {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </label>
+            <label>Receipt (optional)
+              <input name="receipt" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.csv,.txt" className="aled-field" />
+            </label>
+            <button className="btn-ink !py-2 text-sm" style={{ gridColumn: "1 / -1" }}>Propose expense</button>
+          </form>
+        </WorkspaceSection>
       </main>
     </AppShell>
   );

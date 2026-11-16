@@ -1,7 +1,10 @@
+import { scope } from "@/lib/tenant-scope";
 import { z } from "zod";
 import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit, notify } from "@/lib/auth-server";
 import { homeForRole } from "@/lib/auth";
+import { normalizeTier, rosterTierIndex, filterIdsByTier } from "@/lib/tiers";
+import { assertAdminFloor, isLastAdminError } from "@/lib/last-admin";
 
 export async function GET(request) {
   const ctx = await getRequestContext({ adminOnly: true });
@@ -13,18 +16,43 @@ export async function GET(request) {
   const q = searchParams.get("q");
   const role = searchParams.get("role");
   const dept = searchParams.get("dept");
-  const rows = await sql`
-    SELECT p.*,
-      (SELECT json_agg(json_build_object('slug', d.slug, 'level', m.level))
-       FROM department_memberships m JOIN departments d ON d.id = m.department_id
-       WHERE m.user_id = p.user_id) AS departments
-    FROM profiles p
-    WHERE (p.tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL)
-      AND (${q ? sql`(p.name ILIKE ${"%" + q + "%"} OR p.user_id ILIKE ${"%" + q + "%"})` : sql`TRUE`})
-      AND (${role ? sql`p.role = ${role}` : sql`TRUE`})
-      AND (${dept ? sql`EXISTS (SELECT 1 FROM department_memberships m JOIN departments d ON d.id = m.department_id WHERE m.user_id = p.user_id AND d.slug = ${dept})` : sql`TRUE`})
-    ORDER BY p.updated_at DESC LIMIT 50
-  `;
+  const tierFilter = normalizeTier(searchParams.get("tier"));
+  let rows;
+  if (tierFilter) {
+    const tierIndex = await rosterTierIndex(sql, {
+      tenantId: tenant?.id ?? null,
+      q,
+      role,
+      dept,
+      matchGithub: false,
+    });
+    const visibleIds = tierIndex.tierReady
+      ? filterIdsByTier(tierIndex.ids, tierIndex.tierMap, tierFilter)
+      : tierIndex.ids;
+    rows = visibleIds.length === 0 ? [] : await sql`
+      SELECT p.*,
+        (SELECT json_agg(json_build_object('slug', d.slug, 'level', m.level))
+         FROM department_memberships m JOIN departments d ON d.id = m.department_id
+         WHERE m.user_id = p.user_id) AS departments
+      FROM profiles p
+      WHERE p.user_id = ANY(${visibleIds})
+        AND p.tenant_id = ${scope(tenant?.id ?? null)}::uuid
+      ORDER BY p.updated_at DESC LIMIT 50
+    `;
+  } else {
+    rows = await sql`
+      SELECT p.*,
+        (SELECT json_agg(json_build_object('slug', d.slug, 'level', m.level))
+         FROM department_memberships m JOIN departments d ON d.id = m.department_id
+         WHERE m.user_id = p.user_id) AS departments
+      FROM profiles p
+      WHERE p.tenant_id = ${scope(tenant?.id ?? null)}::uuid
+        AND (${q ? sql`(p.name ILIKE ${"%" + q + "%"} OR p.user_id ILIKE ${"%" + q + "%"})` : sql`TRUE`})
+        AND (${role ? sql`p.role = ${role}` : sql`TRUE`})
+        AND (${dept ? sql`EXISTS (SELECT 1 FROM department_memberships m JOIN departments d ON d.id = m.department_id WHERE m.user_id = p.user_id AND d.slug = ${dept})` : sql`TRUE`})
+      ORDER BY p.updated_at DESC LIMIT 50
+    `;
+  }
   return ok({ students: rows });
 }
 
@@ -61,7 +89,7 @@ export async function PATCH(request) {
   } catch (e) {
     return validationError(e);
   }
-  const [target] = await sql`SELECT * FROM profiles WHERE user_id = ${body.userId} AND (tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL) LIMIT 1`;
+  const [target] = await sql`SELECT * FROM profiles WHERE user_id = ${body.userId} AND tenant_id = ${scope(tenant?.id ?? null)}::uuid LIMIT 1`;
   if (!target) return fail("NOT_FOUND", "Student not in your college", 404);
 
   // --- founder / self / last-admin guards ----------------------------------
@@ -76,13 +104,7 @@ export async function PATCH(request) {
   if (body.userId === user.id) {
     return fail("FORBIDDEN", "You cannot change your own role", 403);
   }
-  if (target.role === "admin" && body.role !== "admin") {
-    const [{ admins = 0 } = {}] = await sql`
-      SELECT COUNT(*)::int AS admins FROM profiles
-      WHERE role = 'admin' AND (tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL)
-    `;
-    if (admins <= 1) return fail("FORBIDDEN", "Cannot remove the last admin in this chapter", 403);
-  }
+  const removingAdminSeat = target.role === "admin" && body.role !== "admin";
 
   const termStart = ROTATING_ROLES.has(body.role) || body.role === "core"
     ? new Date().toISOString().slice(0, 10)
@@ -97,7 +119,7 @@ export async function PATCH(request) {
   let departmentId = null;
   if (body.role === "dept_lead") {
     if (!body.departmentId) return fail("VALIDATION_ERROR", "Choose the department this Head / Co-Head will lead", 400);
-    const [dept] = await sql`SELECT id, slug FROM departments WHERE id = ${body.departmentId} AND (tenant_id = ${tenant?.id ?? null}::uuid OR ${tenant?.id ?? null}::uuid IS NULL) LIMIT 1`;
+    const [dept] = await sql`SELECT id, slug FROM departments WHERE id = ${body.departmentId} AND tenant_id = ${scope(tenant?.id ?? null)}::uuid LIMIT 1`;
     if (!dept) return fail("NOT_FOUND", "Department not found in your college", 404);
     departmentId = dept.id;
   }
@@ -107,7 +129,12 @@ export async function PATCH(request) {
   // Single transaction: profiles + memberships + departments + audit + notify.
   // Prevents partial-state gaps (role updated but membership not). Tenant-scoped
   // target was already verified above; all writes use that tenant.
-  const updated = await sql.begin(async (tx) => {
+  let updated;
+  try {
+    updated = await sql.begin(async (tx) => {
+    if (removingAdminSeat) {
+      await assertAdminFloor(tx, { tenantId: tenant?.id, removingUserIds: [body.userId] });
+    }
     const [up] = await tx`
       UPDATE profiles SET role = ${body.role},
         vertical = ${body.role === "vertical_lead" ? body.vertical : null},
@@ -193,6 +220,10 @@ export async function PATCH(request) {
       after: { role: body.role, vertical: body.role === "vertical_lead" ? body.vertical : null, departmentId, termStart, termEnd },
     });
     return up;
-  });
+    });
+  } catch (error) {
+    if (isLastAdminError(error)) return fail("FORBIDDEN", "Cannot remove the last admin in this chapter", 403);
+    throw error;
+  }
   return ok({ profile: updated });
 }

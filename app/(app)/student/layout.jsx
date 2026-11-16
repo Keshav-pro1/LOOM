@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { getRequestContext } from "@/lib/auth-server";
+import "../../../components/loom/workspace.css";
 
 // Private workspace — never indexed.
 export const metadata = {
@@ -14,6 +15,9 @@ export const metadata = {
 export default async function StudentLayout({ children }) {
   const ctx = await getRequestContext();
   if (ctx.error === "UNAUTHORIZED") redirect("/login?redirect=/student");
+  if (ctx.error === "CONSENT_REQUIRED") redirect("/consent");
+  if (ctx.error === "ACCOUNT_SUSPENDED") redirect("/account-status?state=suspended");
+  if (ctx.error === "ACCOUNT_DEACTIVATED") redirect("/account-status?state=deactivated");
   if (ctx.error === "PROFILE_NOT_FOUND") redirect("/login?redirect=/student");
 
   // First-run gate: a student who has not finished onboarding has no domain, no

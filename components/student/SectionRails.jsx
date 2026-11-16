@@ -8,13 +8,15 @@ import { PLANNER_ENABLED } from "@/lib/feature-flags";
 export const LEARN_TABS = [
   { href: "/student/roadmap", label: "Roadmap" },
   ...(PLANNER_ENABLED ? [{ href: "/student/planner", label: "Planner" }] : []),
+  { href: "/student/practice", label: "Practice" },
   { href: "/student/resources", label: "Resources" }
 ];
 
 export const BUILD_TABS = [
   { href: "/student/projects", label: "Projects" },
   { href: "/student/github", label: "GitHub" },
-  { href: "/student/opensource", label: "Open source" }
+  { href: "/student/opensource", label: "Open source" },
+  { href: "/student/debug", label: "Debug" }
 ];
 
 export const PROVE_TABS = [
@@ -40,6 +42,7 @@ export const CONNECT_TABS = [
   { href: "/student/mentorship", label: "Mentors" },
   { href: "/student/help", label: "Peer help" },
   { href: "/student/community", label: "Community" },
+  { href: "/student/sponsors", label: "Sponsors" },
   { href: "/student/events", label: "Events" }
 ];
 
