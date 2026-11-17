@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ok, fail, validationError } from "@/lib/api";
 import { getRequestContext, writeAudit } from "@/lib/auth-server";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { normalizeLeetCodeUsername } from "@/lib/leetcode";
+import { fetchAccepted, normalizeLeetCodeUsername } from "@/lib/leetcode";
 
 const schema = z.object({
   username: z.string().min(1).max(80)
@@ -28,6 +28,21 @@ export async function POST(request) {
   const username = normalizeLeetCodeUsername(body.username);
   if (!username) {
     return fail("VALIDATION_ERROR", "Enter a LeetCode username, not a profile URL.", 400, {
+      field: "username"
+    });
+  }
+
+  const profile = await fetchAccepted(username, user.id, { timeoutMs: 8_000 });
+  if (!profile.ok) {
+    if (profile.code === "LEETCODE_PROFILE_NOT_FOUND") {
+      return fail(profile.code, profile.message, 400, { field: "username" });
+    }
+    if (profile.code === "LEETCODE_RATE_LIMITED") {
+      return fail(profile.code, "LeetCode is rate limiting requests. Try again in a few minutes.", 429, {
+        field: "username"
+      });
+    }
+    return fail("LEETCODE_UNAVAILABLE", "Could not verify that LeetCode profile right now. Try again.", 503, {
       field: "username"
     });
   }

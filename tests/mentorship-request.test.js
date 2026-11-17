@@ -51,7 +51,8 @@ describe("mentorship request scope", () => {
     expect(response.status).toBe(200);
     const query = sql.calls.find((c) => c.text.includes("FROM mentors"));
     expect(query.text).toContain("m.tenant_id = ?::uuid");
-    expect(query.text).not.toContain("IS NULL");
+    expect(query.text).toContain("BTRIM(m.expertise)");
+    expect(query.text).not.toContain("tenant_id IS NULL");
   });
 
   it("fails closed when the request has no chapter", async () => {
@@ -65,8 +66,21 @@ describe("mentorship request scope", () => {
 
   it("refuses a duplicate open request", async () => {
     const sql = recorder((text) => {
-      if (text.startsWith("SELECT * FROM mentors")) return [{ user_id: MENTOR }];
+      if (text.startsWith("SELECT * FROM mentors")) return [{ user_id: MENTOR, expertise: "React" }];
       if (text.includes("FROM mentor_sessions") && text.includes("status IN")) return [{ id: "session-1" }];
+      return [];
+    });
+    const { POST } = await load({ sql });
+
+    const response = await POST(request({ mentorId: MENTOR }));
+
+    expect(response.status).toBe(409);
+    expect(sql.calls.some((c) => c.text.startsWith("INSERT INTO mentor_sessions"))).toBe(false);
+  });
+
+  it("refuses an unscoped mentor even if the row is otherwise available", async () => {
+    const sql = recorder((text) => {
+      if (text.startsWith("SELECT * FROM mentors")) return [{ user_id: MENTOR, expertise: "   " }];
       return [];
     });
     const { POST } = await load({ sql });

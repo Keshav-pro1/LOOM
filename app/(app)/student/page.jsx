@@ -215,7 +215,10 @@ export default async function StudentPage() {
     SELECT status, created_at FROM mentor_applications WHERE student_id = ${user.id}
     ORDER BY created_at DESC LIMIT 1
   ` : [];
-  const myProjects = await sql`SELECT COUNT(*)::int AS c FROM projects WHERE owner_id = ${user?.id ?? ""}`;
+  const [myProjects] = await sql`SELECT COUNT(*)::int AS c FROM projects WHERE owner_id = ${user?.id ?? ""}`;
+  const [githubConnection] = await sql`
+    SELECT 1 AS linked FROM github_connections WHERE user_id = ${user?.id ?? ""} LIMIT 1
+  `;
   const [mySolutions] = await sql`
     SELECT COUNT(*)::int AS c FROM forum_replies
     WHERE author_id = ${user?.id ?? ""} AND is_answer = true AND status = 'visible'
@@ -316,6 +319,7 @@ export default async function StudentPage() {
         notifUnread={notifUnread?.c ?? 0}
         projectsPreview={recentProjects}
         projectCount={myProjects[0]?.c ?? 0}
+        githubConnected={Boolean(githubConnection)}
         achievementsPreview={achievementsPreview}
         achievementCount={achievementCount?.c ?? 0}
         credentialCount={credentialCount?.c ?? 0}

@@ -637,3 +637,118 @@ describe("oauth routes are not publicly reachable", () => {
     expect(publicBlock).toContain("/api/github/webhook");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Token refresh
+// ---------------------------------------------------------------------------
+
+describe("readAccessToken", () => {
+  let readAccessToken;
+  let seal;
+  let open;
+
+  beforeEach(async () => {
+    process.env.GITHUB_TOKEN_ENCRYPTION_KEY = KEY_A;
+    vi.resetModules();
+    ({ readAccessToken } = await import("@/lib/github-oauth"));
+    ({ seal, open } = await import("@/lib/crypto"));
+  });
+
+  function sqlWith(connection) {
+    const calls = [];
+    const sql = (strings, ...values) => {
+      const text = strings.join("?").replace(/\s+/g, " ").trim();
+      calls.push({ text, values });
+      if (text.startsWith("SELECT access_token_cipher")) return Promise.resolve([connection]);
+      return Promise.resolve([]);
+    };
+    sql.array = (value) => value;
+    sql.calls = calls;
+    return sql;
+  }
+
+  it("refreshes an expired token and persists the rotated credentials", async () => {
+    const sql = sqlWith({
+      access_token_cipher: seal("gho_old"),
+      refresh_token_cipher: seal("ghr_old"),
+      token_expires_at: "2026-01-01T00:00:00.000Z",
+      token_scopes: ["repo", "read:user"],
+      github_user_id: 42
+    });
+    let body = null;
+    const fetchImpl = async (url, opts) => {
+      body = new URLSearchParams(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          access_token: "gho_new",
+          refresh_token: "ghr_new",
+          expires_in: 3600,
+          scope: "repo,read:user"
+        })
+      };
+    };
+
+    const result = await readAccessToken({
+      sql,
+      userId: "user-1",
+      clientId: "client",
+      clientSecret: "secret",
+      fetchImpl,
+      now: Date.parse("2026-01-02T00:00:00.000Z")
+    });
+
+    expect(result).toMatchObject({ ok: true, accessToken: "gho_new", refreshed: true, githubUserId: 42 });
+    expect(body.get("grant_type")).toBe("refresh_token");
+    expect(body.get("refresh_token")).toBe("ghr_old");
+
+    const update = sql.calls.find((c) => c.text.startsWith("UPDATE github_connections"));
+    expect(open(update.values[0])).toBe("gho_new");
+    expect(open(update.values[1])).toBe("ghr_new");
+    expect(update.values[3]).toBe("2026-01-02T01:00:00.000Z");
+  });
+
+  it("reads a non-expiring token without calling GitHub", async () => {
+    const sql = sqlWith({
+      access_token_cipher: seal("gho_live"),
+      refresh_token_cipher: null,
+      token_expires_at: null,
+      token_scopes: ["repo"],
+      github_user_id: 42
+    });
+    let called = false;
+
+    const result = await readAccessToken({
+      sql,
+      userId: "user-1",
+      fetchImpl: async () => { called = true; }
+    });
+
+    expect(result).toMatchObject({ ok: true, accessToken: "gho_live" });
+    expect(called).toBe(false);
+  });
+
+  it("asks for a re-link when refresh fails", async () => {
+    const sql = sqlWith({
+      access_token_cipher: seal("gho_old"),
+      refresh_token_cipher: seal("ghr_old"),
+      token_expires_at: "2026-01-01T00:00:00.000Z",
+      token_scopes: ["repo"],
+      github_user_id: 42
+    });
+
+    const result = await readAccessToken({
+      sql,
+      userId: "user-1",
+      clientId: "client",
+      clientSecret: "secret",
+      fetchImpl: async () => ({
+        ok: false,
+        json: async () => ({ error: "bad_refresh_token" })
+      }),
+      now: Date.parse("2026-01-02T00:00:00.000Z")
+    });
+
+    expect(result).toEqual({ ok: false, reason: "TOKEN_EXPIRED" });
+  });
+});

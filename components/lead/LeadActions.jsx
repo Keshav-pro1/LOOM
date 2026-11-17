@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { monthKey } from "@/lib/report-month";
 
 async function postJSON(url, method, body) {
   const res = await fetch(url, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
@@ -142,7 +143,7 @@ export function ReportCard({ departments }) {
   async function refresh(deptId, ym) {
     const data = await postJSON(`/api/reports?departmentId=${deptId}`, "GET").catch(() => null);
     const list = data?.data?.reports || data?.reports || [];
-    const found = list.find((r) => String(r.month).slice(0, 7) === ym) || null;
+    const found = list.find((r) => monthKey(r.month) === ym) || null;
     setReport(found);
     setNarrative(found?.narrative || "");
   }

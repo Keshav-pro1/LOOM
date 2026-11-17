@@ -373,6 +373,146 @@
   color: var(--desk-muted);
 }
 
+.desk-firstweek-meter {
+  height: 3px;
+  margin-top: 1rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--desk-line) 78%, transparent);
+}
+
+.desk-firstweek-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--desk-thread), var(--desk-seal));
+  transition: width 240ms ease;
+}
+
+.desk-firstweek-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.desk-firstweek-step a {
+  display: grid;
+  grid-template-columns: 1.85rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.85rem;
+  border: 1px solid var(--desk-line);
+  border-radius: 12px;
+  padding: 0.8rem 0.9rem;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.desk-firstweek-step a:hover {
+  border-color: color-mix(in srgb, var(--desk-thread) 42%, var(--desk-line));
+  background: color-mix(in srgb, var(--desk-thread) 5%, transparent);
+}
+
+.desk-firstweek-step a:active {
+  transform: scale(0.995);
+}
+
+.desk-firstweek-dot {
+  display: grid;
+  place-items: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border: 1px solid var(--desk-line);
+  border-radius: 50%;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: var(--desk-muted);
+}
+
+.desk-firstweek-step.is-done .desk-firstweek-dot {
+  border-color: var(--desk-thread);
+  background: var(--desk-thread);
+  color: var(--bg);
+}
+
+.desk-firstweek-step.is-now .desk-firstweek-dot {
+  border-color: var(--desk-thread);
+  color: var(--desk-thread);
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+.desk-firstweek-copy {
+  min-width: 0;
+}
+
+.desk-firstweek-title {
+  display: block;
+  overflow-wrap: break-word;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--desk-ink);
+}
+
+.desk-firstweek-body {
+  display: block;
+  margin-top: 0.18rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--desk-muted);
+}
+
+.desk-firstweek-action {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--desk-thread);
+  white-space: nowrap;
+}
+
+.desk-firstweek-step.is-done .desk-firstweek-action {
+  color: var(--desk-muted);
+}
+
+.desk-firstweek-step.is-todo .desk-firstweek-action {
+  color: var(--desk-muted);
+}
+
+.desk-firstweek-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--desk-line) 72%, transparent);
+  padding-top: 1rem;
+}
+
+.desk-firstweek-cta p {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--desk-ink);
+}
+
+@media (max-width: 560px) {
+  .desk-firstweek-step a {
+    grid-template-columns: 1.85rem minmax(0, 1fr);
+  }
+
+  .desk-firstweek-action {
+    grid-column: 2;
+    justify-self: start;
+    white-space: normal;
+  }
+}
+
 .desk-journey-board {
   position: relative;
   isolation: isolate;

@@ -3,11 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CalendarDays, Check, Clock3, ExternalLink, RefreshCw, Trophy, UserRound } from "lucide-react";
+import { CalendarDays, Check, Clock3, ExternalLink, RefreshCw, UserRound } from "lucide-react";
 import { ActionLink, Meta, StatusPill } from "@/components/loom/primitives";
+import { StatTile } from "@/components/loom/StatTiles";
 import { WorkspaceEmpty, WorkspaceSection } from "@/components/loom/WorkspaceMasthead";
 import { Field, inputStyle } from "@/components/ui";
 import { postJSON } from "@/components/loom/useAction";
+import { STARTER_PROBLEMS } from "@/lib/practice-starters";
 
 function date(value, options = {}) {
   if (!value) return "";
@@ -145,6 +147,23 @@ export function PracticeClient({ snapshot, userId }) {
   const connection = snapshot.connection;
   const stale = connection?.lastSyncAt && snapshot.now - connection.lastSyncAt > snapshot.staleAfterMs;
 
+  const myCredits = snapshot.credits.filter((credit) => credit.userId === userId);
+  const monthCredits = myCredits.filter(
+    (credit) => credit.acceptedAt >= snapshot.monthStart && credit.acceptedAt < snapshot.monthEnd
+  );
+  const weekCreditCounts = new Map();
+  for (const credit of myCredits) {
+    weekCreditCounts.set(credit.weekId, (weekCreditCounts.get(credit.weekId) || 0) + 1);
+  }
+  const bestWeek = Math.max(0, ...weekCreditCounts.values());
+  const activeWeeks = weekCreditCounts.size;
+  const questionById = new Map(snapshot.questions.map((question) => [question.id, question]));
+  const difficulty = { Easy: 0, Medium: 0, Hard: 0 };
+  for (const credit of myCredits) {
+    const level = questionById.get(credit.questionId)?.difficulty;
+    if (level && difficulty[level] !== undefined) difficulty[level] += 1;
+  }
+
   async function refresh() {
     setRefreshBusy(true);
     setRefreshMessage("");
@@ -274,10 +293,26 @@ export function PracticeClient({ snapshot, userId }) {
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
           <div>
             {!snapshot.current ? (
-              <WorkspaceEmpty
-                title="No set published yet."
-                body="Your DSA team has not released this week's questions. The previous weeks stay open for practice."
-              />
+              <div>
+                <WorkspaceEmpty
+                  title="No set published yet."
+                  body="Your DSA team has not released this week's questions. The previous weeks stay open for practice."
+                />
+                <div className="mt-4 rounded-2xl border p-4" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>Starter practice</p>
+                    <StatusPill>not scored</StatusPill>
+                  </div>
+                  <p className="narrative mt-1 text-xs leading-5">
+                    Seven real LeetCode problems to keep the habit going until your team publishes a week. These do not affect practice points.
+                  </p>
+                  <ol className="mt-3 grid gap-2">
+                    {STARTER_PROBLEMS.map((question) => (
+                      <QuestionRow key={question.slug} question={question} credit={null} />
+                    ))}
+                  </ol>
+                </div>
+              </div>
             ) : currentQuestions.length === 0 ? (
               <WorkspaceEmpty
                 title="This week is published without questions."
@@ -293,7 +328,7 @@ export function PracticeClient({ snapshot, userId }) {
           </div>
           <aside className="rounded-2xl border p-5" style={{ borderColor: "var(--line)", background: "var(--bg)" }}>
             <Meta>Your weekly rhythm</Meta>
-            <p className="figure figure-mono mt-3 text-4xl">{currentCredits.length}<span className="meta ml-2">/ {snapshot.current ? currentQuestions.length || 7 : 0}</span></p>
+            <p className="figure figure-mono mt-3 text-4xl">{currentCredits.length}<span className="meta ml-2">/ {snapshot.current ? currentQuestions.length : 0}</span></p>
             <p className="narrative mt-2 text-xs leading-5">questions recorded</p>
             <div className="mt-4 border-t pt-4" style={{ borderColor: "var(--line)" }}>
               <p className="meta">Weekly rank</p>
@@ -310,6 +345,49 @@ export function PracticeClient({ snapshot, userId }) {
 
       <WorkspaceSection
         index="02"
+        title="Your practice record"
+        note="Only credited solves in the published window are counted."
+      >
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatTile
+            value={myCredits.length}
+            label={`credited solve${myCredits.length === 1 ? "" : "s"} in released weeks`}
+          />
+          <StatTile
+            value={monthCredits.length}
+            label="credited solves this month"
+          />
+          <StatTile
+            value={bestWeek}
+            label="best single week"
+          />
+          <StatTile
+            value={activeWeeks}
+            label={`week${activeWeeks === 1 ? "" : "s"} with at least one solve`}
+          />
+        </div>
+        <div className="mt-5 rounded-2xl border p-4" style={{ borderColor: "var(--line)", background: "var(--bg-elevated)" }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>Difficulty mix</p>
+            <p className="meta">{myCredits.length} credited solve{myCredits.length === 1 ? "" : "s"}</p>
+          </div>
+          {myCredits.length === 0 ? (
+            <p className="narrative mt-2 text-xs leading-5">Difficulty appears after your first credited solve.</p>
+          ) : (
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {Object.entries(difficulty).map(([level, count]) => (
+                <div key={level} className="rounded-xl border px-3 py-2" style={{ borderColor: "var(--line)" }}>
+                  <p className="meta">{level}</p>
+                  <p className="mt-1 text-lg font-semibold" style={{ color: "var(--text)" }}>{count}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </WorkspaceSection>
+
+      <WorkspaceSection
+        index="03"
         title="This week's board"
         note="Practice points are a weekly habit board. Chapter standing is a separate score."
         action={<ActionLink href="/student/practice/leaderboard">Weekly and monthly board</ActionLink>}
@@ -318,7 +396,7 @@ export function PracticeClient({ snapshot, userId }) {
       </WorkspaceSection>
 
       <WorkspaceSection
-        index="03"
+        index="04"
         title="Archive"
         note="Practice stays open; scoring is closed."
       >

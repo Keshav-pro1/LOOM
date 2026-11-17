@@ -10,6 +10,7 @@ import {
 } from "@/lib/github-oauth";
 import { seal } from "@/lib/crypto";
 import { recomputeScore, recordEvidence } from "@/lib/ranking";
+import { appBaseUrl } from "@/lib/app-url";
 import { env } from "@/lib/env";
 import crypto from "node:crypto";
 
@@ -100,9 +101,10 @@ export async function GET(request) {
   }
   // Consume the cookie regardless of what follows, so a legitimate retry after a
   // mid-flow failure cannot reuse it.
-  const cleared = clearStateCookie(env.NEXT_PUBLIC_APP_URL.startsWith("https"));
+  const base = appBaseUrl();
+  const cleared = clearStateCookie(base.startsWith("https"));
 
-  const redirectUri = `${env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, "")}/api/github/oauth/callback`;
+  const redirectUri = `${base}/api/github/oauth/callback`;
 
   // --- 4. exchange ---
   const exchanged = await exchangeCode({
@@ -162,11 +164,10 @@ export async function GET(request) {
   // A handle rename must not orphan the connection: rebind the display name
   // unconditionally, since GitHub has just told us what it currently is.
   //
-  // The token is stored sealed, but nothing reads it back yet. That is
-  // deliberate: there is no feature that needs it today (grants are cached in
-  // github_repo_grants), and a stored-credential read path with no caller is
-  // attack surface for no benefit. When re-verification is wired, unseal through
-  // lib/crypto.js `open()` at that point.
+  // The token is stored sealed. Repository lists and writes unseal it lazily
+  // through readAccessToken(), which also refreshes an expired token before
+  // handing it back; an unreadable token fails closed rather than falling back
+  // to a typed handle.
   await sql`
     INSERT INTO github_connections
       (user_id, github_username, github_user_id, access_token_cipher, refresh_token_cipher,
@@ -228,7 +229,7 @@ export async function GET(request) {
       const hook = await ensureWebhook({
         accessToken: exchanged.accessToken,
         fullName: perm.fullName,
-        webhookUrl: `${env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, "")}/api/github/webhook`,
+        webhookUrl: `${base}/api/github/webhook`,
         secret: env.GITHUB_WEBHOOK_SECRET
       });
       if (hook.ok && hook.installed) {

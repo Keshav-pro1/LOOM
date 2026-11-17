@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getRequestContext } from "@/lib/auth-server";
 import { AppShell } from "@/components/AppShell";
-import { env } from "@/lib/env";
+import { appBaseUrl } from "@/lib/app-url";
 import { ActionLink } from "@/components/loom/primitives";
 import { DataTable } from "@/components/loom/DataTable";
 import { OnboardingState } from "@/components/loom/States";
@@ -75,7 +75,7 @@ export default async function CredentialsPage() {
 
   const views = credentials.reduce((n, c) => n + (c.view_count || 0), 0);
   const groups = groupLinksByAchievement(credentials);
-  const appUrl = env.NEXT_PUBLIC_APP_URL;
+  const appUrl = appBaseUrl();
 
   if (achievements.length === 0) {
     return (

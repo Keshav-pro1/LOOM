@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { fail } from "@/lib/api";
 import { getRequestContext } from "@/lib/auth-server";
 import { authorizeUrl, generatePkcePair, signState } from "@/lib/github-oauth";
+import { appBaseUrl } from "@/lib/app-url";
 import { env } from "@/lib/env";
 
 // Start the repository grant.
@@ -48,7 +49,8 @@ export async function GET(request) {
   // it, on top of the HMAC-signed state.
   const pkce = generatePkcePair();
 
-  const redirectUri = `${env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, "")}/api/github/oauth/callback`;
+  const base = appBaseUrl();
+  const redirectUri = `${base}/api/github/oauth/callback`;
   const target = authorizeUrl({
     clientId: env.GITHUB_CLIENT_ID,
     redirectUri,
@@ -76,7 +78,7 @@ export async function GET(request) {
     headers: {
       Location: target,
       "Cache-Control": "no-store",
-      "Set-Cookie": `${STATE_COOKIE}=${cookieValue}; Path=/; Max-Age=${STATE_TTL_SECONDS}; HttpOnly; SameSite=Lax${env.NEXT_PUBLIC_APP_URL.startsWith("https") ? "; Secure" : ""}`
+      "Set-Cookie": `${STATE_COOKIE}=${cookieValue}; Path=/; Max-Age=${STATE_TTL_SECONDS}; HttpOnly; SameSite=Lax${base.startsWith("https") ? "; Secure" : ""}`
     }
   });
   return response;

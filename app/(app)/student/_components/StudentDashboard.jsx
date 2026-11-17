@@ -5,8 +5,8 @@ import Link from "next/link";
 import { FolderKanban, GitPullRequest, Map as MapIcon } from "lucide-react";
 import { Reveal } from "@/components/motion/Reveal";
 import { ActionLink } from "@/components/loom/primitives";
-import { OnboardingState } from "@/components/loom/States";
 import { DepartmentsSection } from "@/components/student/OrgPanels";
+import { FirstWeekJourney } from "./FirstWeekJourney";
 import { PLANNER_ENABLED } from "@/lib/feature-flags";
 import { domainArt, eventArt } from "@/lib/artwork";
 import "./student-folio.css";
@@ -34,13 +34,14 @@ export function StudentDashboard({
   profile, greeting, todayLabel, nextNode, nodes, verifiedIds = [], provisionalCount = 0, overallPercent,
   nextMilestone, weekDays, weekCounts, contests, events, sessions, proof, snapshot, peers,
   loop, cadence, notificationsPreview, notifUnread, projectsPreview, projectCount,
-  achievementsPreview, achievementCount, credentialCount
+  achievementsPreview, achievementCount, credentialCount, githubConnected = false
 }) {
   const name = profile?.name?.split(" ")[0] || "there";
   // The map draws verified progress. Claims stay in `doneIds` so the UI can
   // mention them ("awaiting review"), but they are never painted as done.
   const done = new Set(verifiedIds);
-  const fresh = !profile?.primary_domain || verifiedIds.length === 0;
+  const firstWeekDone = verifiedIds.length > 0 && githubConnected && projectCount > 0;
+  const fresh = !profile?.primary_domain || (!firstWeekDone && verifiedIds.length <= 1);
   const remaining = nodes.length - verifiedIds.length;
   const domainLabel = nextNode?.domain ? nextNode.domain.replace(/_/g, " ").replace(/\b\w/g, c=>c.toUpperCase()) : "Roadmap";
   const heroArt = domainArt(profile?.primary_domain);
@@ -166,19 +167,13 @@ export function StudentDashboard({
 
       {fresh ? (
         <Reveal delay={0.06}>
-          <section className="mt-2">
-            <OnboardingState
-              eyebrow="Your first week"
-              title="Three small steps unlock everything."
-              why="LOOM reads your real activity - roadmap progress, commits, shipped projects - and turns it into proof."
-              steps={[
-                { title: "Set your direction", body: "Pick a track in onboarding so recommendations point correctly." },
-                { title: "Finish your first node", body: "Open the roadmap and complete milestone one. The next unlocks itself." },
-                { title: "Connect GitHub", body: "Real commits become growth evidence, automatically." }
-              ]}
-              action={<Link href="/student/roadmap" prefetch={false} className="btn-ink">Open your roadmap &rarr;</Link>}
-            />
-          </section>
+          <FirstWeekJourney
+            domain={profile?.primary_domain}
+            verifiedCount={verifiedIds.length}
+            githubConnected={githubConnected}
+            projectCount={projectCount}
+            nextNode={nextNode}
+          />
         </Reveal>
       ) : (
         <>

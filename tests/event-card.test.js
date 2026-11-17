@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { readFileSync } from "node:fs";
 import satori from "satori";
@@ -77,6 +77,11 @@ describe("event artwork", () => {
 });
 
 describe("event card content", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: new Date("2026-11-10T00:00:00Z"), toFake: ["Date"] });
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("shows the title, type, date, venue, seats, and real destination", () => {
     const text = cardText(EVENT);
     expect(text).toContain("Midnight Build Sprint");

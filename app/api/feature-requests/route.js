@@ -5,6 +5,7 @@ import { getRequestContext, writeAudit, notify } from "@/lib/auth-server";
 import { requireCan, toGuardResponse } from "@/lib/requirePermission";
 import { listFeatureRequests, screenFeatureRequest } from "@/lib/feature-requests";
 import { syncFeatureRequestToGitHub } from "@/lib/github-issues";
+import { appBaseUrl } from "@/lib/app-url";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 const createSchema = z.object({
@@ -48,7 +49,7 @@ export async function POST(request) {
     row,
     tenantId: tenant?.id ?? null,
     tenantName: tenant?.name,
-    appUrl: process.env.NEXT_PUBLIC_APP_URL,
+    appUrl: appBaseUrl(),
   });
   const saved = synced?.row || row;
   // notify admins
