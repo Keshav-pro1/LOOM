@@ -5,6 +5,7 @@ import "./globals.css";
 import { SiteFrame } from "@/components/landing/SiteFrame";
 import CustomCursor from "@/components/landing/CustomCursor";
 import { RouteProgress } from "@/components/loom/RouteProgress";
+import { ScrollToTop } from "@/components/loom/ScrollToTop";
 import { appBaseUrl } from "@/lib/app-url";
 
 const geistSans = Geist({
@@ -88,6 +89,7 @@ export default async function RootLayout({ children }) {
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 z-[100] rounded bg-[var(--bg-elevated)] px-3 py-2 text-sm">Skip to content</a>
         <div aria-hidden="true" className="site-shader" />
         <RouteProgress />
+        <ScrollToTop />
         <ThemeProvider>
           <SiteFrame>{children}</SiteFrame>
           <CustomCursor />

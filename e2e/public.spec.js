@@ -157,6 +157,26 @@ test.describe("LOOM public site", () => {
     await expect(page).toHaveURL("/about", { timeout: 20000 });
   });
 
+  test("a new page opens at the top, not at the previous scroll offset", async ({ page }) => {
+    // Below 1100px the primary nav collapses into the menu sheet; this test is
+    // about following a normal nav link, so it runs on the desktop project only.
+    test.skip((page.viewportSize()?.width ?? 0) < 1100, "desktop primary nav only");
+    await open(page, "/");
+    await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "instant" }));
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)), { timeout: 10000 })
+      .toBeGreaterThan(500);
+
+    await page
+      .locator('header.site-nav nav[aria-label="Primary"]')
+      .getByRole("link", { name: "FAQ", exact: true })
+      .click();
+
+    await expect(page).toHaveURL(/\/faq$/, { timeout: 20000 });
+    // The reset is instant even though globals.css sets scroll-behavior: smooth.
+    await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(0);
+  });
+
   test("public apis return ok without auth", async ({ request }) => {
     for (const path of ["/api/public/events", "/api/public/projects", "/api/public/departments", "/api/public/summary"]) {
       const res = await request.get(path);
