@@ -1,5 +1,5 @@
 const { test, expect } = require("@playwright/test");
-const { AUTH_STATE_FILE, hasAuthState } = require("./auth-state");
+const { AUTH_STATE_FILE } = require("./auth-state");
 
 // Authenticated STUDENT audit. Every other spec in this repo is unauthenticated
 // (route protection only), so the student surface had no runtime coverage at
@@ -76,7 +76,13 @@ const REDIRECT_ROUTES = [
 // (e2e/auth.setup.js) performs it and saves the session; signing in per test
 // file, per project, is what used to exhaust the login rate limit and fail
 // whichever spec ran ninth. See e2e/auth-state.js.
-test.use({ storageState: hasAuthState() ? AUTH_STATE_FILE : undefined });
+//
+// Unconditional on purpose: test files are collected before the `setup`
+// dependency runs, so probing for the file here would be false on a clean
+// checkout and silently run these specs logged out. The dependency guarantees
+// the file exists by the time a test starts, and the skip above keeps a
+// credential-less clone from needing it at all.
+test.use({ storageState: AUTH_STATE_FILE });
 
 test("workspace owns the top chrome", async ({ page }) => {
   await page.goto("/student");

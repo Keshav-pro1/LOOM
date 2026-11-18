@@ -39,8 +39,14 @@ test("homepage carousel supports buttons and keyboard", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
   const carousel = page.getByRole("region", { name: "Technical domains" });
-  await carousel.scrollIntoViewIfNeeded();
+  // Assert the content BEFORE scrolling: this carousel is behind a Suspense
+  // boundary, so the node that exists while the lazy chunk resolves is replaced
+  // once it mounts. scrollIntoViewIfNeeded() does not retry a detached node (it
+  // failed once in a full parallel run with "Element is not attached to the
+  // DOM"), while expect().toContainText() polls and re-resolves, so this order
+  // waits out the remount instead of racing it. The assertions are unchanged.
   await expect(carousel.locator(".pl-sr")).toContainText("AI & Machine Learning");
+  await carousel.scrollIntoViewIfNeeded();
   await carousel.getByRole("button", { name: "Next", exact: true }).click();
   await expect(carousel.locator(".pl-sr")).toContainText("Web Development");
   await carousel.focus();
