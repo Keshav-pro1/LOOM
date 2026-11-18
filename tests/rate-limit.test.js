@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetRateLimitMemory,
+  accountKey,
   checkRateLimit,
+  clientIp,
   durableRateLimitConfigured,
   rateLimitResponse
 } from "@/lib/rate-limit";
@@ -86,7 +88,7 @@ describe("in-memory limiter", () => {
 });
 
 describe("request-derived keys", () => {
-  it("separates callers by the first forwarded IP", () => {
+  it("separates callers by the nearest proxy's IP", () => {
     const a = checkRateLimit(requestFor("1.1.1.1").request, { limit: 1, windowMs: 60_000 });
     const b = checkRateLimit(requestFor("2.2.2.2").request, { limit: 1, windowMs: 60_000 });
     const aAgain = checkRateLimit(requestFor("1.1.1.1").request, { limit: 1, windowMs: 60_000 });
@@ -112,6 +114,65 @@ describe("request-derived keys", () => {
     const r = requestFor(null);
     checkRateLimit(r.request, { limit: 1 });
     expect(checkRateLimit(r.request, { limit: 1 }).ok).toBe(false);
+  });
+});
+
+describe("client address resolution", () => {
+  function req(headers) {
+    return new Request("http://localhost/api/auth/login", { headers });
+  }
+
+  it("uses the LAST x-forwarded-for entry, which the nearest proxy wrote", () => {
+    // A client can put anything in the left-hand entries. Counting the
+    // left-most one let a rotating fake header reset the budget every request
+    // (verified live: 12/12 attempts at 401 instead of a 429 on the ninth).
+    const spoofed = req({ "x-forwarded-for": "203.0.113.9, 198.51.100.7" });
+    expect(clientIp(spoofed)).toBe("198.51.100.7");
+  });
+
+  it("ignores a rotated left-hand entry", () => {
+    const first = checkRateLimit(req({ "x-forwarded-for": "10.0.0.1, 198.51.100.7" }), { limit: 1 });
+    const second = checkRateLimit(req({ "x-forwarded-for": "10.0.0.2, 198.51.100.7" }), { limit: 1 });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+  });
+
+  it("prefers platform-set headers over a client-supplied x-forwarded-for", () => {
+    expect(clientIp(req({ "x-forwarded-for": "1.1.1.1", "x-vercel-forwarded-for": "2.2.2.2" }))).toBe("2.2.2.2");
+    expect(clientIp(req({ "x-forwarded-for": "1.1.1.1", "cf-connecting-ip": "3.3.3.3" }))).toBe("3.3.3.3");
+    expect(clientIp(req({ "x-forwarded-for": "1.1.1.1", "x-real-ip": "4.4.4.4" }))).toBe("4.4.4.4");
+    expect(clientIp(req({ "x-forwarded-for": "1.1.1.1", "fly-client-ip": "5.5.5.5" }))).toBe("5.5.5.5");
+  });
+
+  it("falls back to a shared anon bucket when no address is available", () => {
+    expect(clientIp(req({}))).toBe("anon");
+    expect(clientIp(req({ "x-forwarded-for": " , " }))).toBe("anon");
+  });
+});
+
+describe("account keys", () => {
+  it("is stable for the same address regardless of case or padding", () => {
+    expect(accountKey("  Member@Example.COM ")).toBe(accountKey("member@example.com"));
+  });
+
+  it("separates different addresses and never contains the raw address", () => {
+    const a = accountKey("a@example.com");
+    const b = accountKey("b@example.com");
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    expect(a).not.toContain("@");
+    expect(accountKey(undefined)).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("bounds one mailbox no matter which address header was sent", () => {
+    const target = `login-account:${accountKey("victim@example.com")}`;
+    for (let i = 0; i < 3; i += 1) {
+      expect(checkRateLimit(target, { limit: 3 }).ok).toBe(true);
+    }
+    expect(checkRateLimit(target, { limit: 3 }).ok).toBe(false);
+    // The key is derived from the mailbox alone, so a rotated x-forwarded-for
+    // cannot land in a different bucket for the same account.
+    expect(accountKey("victim@example.com")).toBe(target.slice("login-account:".length));
   });
 });
 
