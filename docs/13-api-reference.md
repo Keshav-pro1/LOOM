@@ -33,6 +33,7 @@ Public (no session): `GET /api/health`, `GET /api/chapters`, `POST /api/github/w
 | GET | `/api/github/oauth/callback` | user | OAuth callback: verifies state/nonce, exchanges the code, stores the sealed token and repo grants, then redirects back to the student GitHub page |
 | GET/POST | `/api/github/repos` | user | OAuth repo picker: `GET ?page=1..5` lists repositories the token can push to (cached in `repositories`, marks `alreadyLinked`); `POST {name, description?, isPrivate?}` creates one on the student's account and audits `created_github_repo` (5/min) |
 | POST | `/api/github/sync` | user | refresh cached repository metadata from GitHub (up to 3 pages / 300 repos; 3/min) |
+| POST | `/api/github/repos/verify` | user | verify/add repositories: body `{repos: ["owner/repo", ...]}` (max 10). Each repo is checked with the student's stored GitHub token; grants are stored explicitly and provisional projects are activated. 12/min rate limit. Returns `{added, activated, repos: [{repo, ok, canPush, canAdmin, isPrivate, reason}]}` |
 | POST | `/api/github/webhook` | service | HMAC-signed GitHub delivery: stores the event, aggregates into `student_daily_activity`, auto-verifies merged OSS PRs and submitted `pull_request_review` claims. Also reachable at the `/api/webhook` alias. |
 
 ## Practice room

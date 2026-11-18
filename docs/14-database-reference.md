@@ -167,7 +167,7 @@ Tracked migrations are the single source of truth for schema — there is no ORM
 - `profiles.tenant_id → tenants.id` is the tenancy root; every tenant query filters on it.
 - `student_roadmap_progress.node_id → roadmap_nodes.id` (text keys, stable across tenants).
 - `student_oss_contributions.project_id → open_source_projects.id`; webhook matches `owner/repo` + author login → profile/github_connection. `canonical_url` is the lower-cased, trailing-slash/files/comment-stripped PR or issue URL, unique per student so one contribution cannot be claimed twice.
-- `repositories.student_id → profiles.user_id`; `github_repo_grants.(user_id, repo_full_name)` is what proves a project repository is owned/pushable, and `projects.repo_full_name` is the one-claim-per-repo key.
+- `repositories.student_id → profiles.user_id`; `repositories` is the tenant-scoped cache behind `GET /api/github/repos`, written by an authenticated GitHub listing (bulk upsert via `jsonb_to_recordset`). `github_repo_grants.(user_id, repo_full_name)` is what proves a project repository is owned/pushable — grants are **explicit only**, written by `POST /api/github/repos/verify` or `POST /api/github/repos`, not silently on every picker load. `projects.repo_full_name` is the one-claim-per-repo key.
 - `mentor_sessions.mentor_id` stores `mentors.user_id` (not the uuid PK) — joins go through `profiles.user_id`.
 - `verifiable_credentials.achievement_id → student_achievements.id`; signature = HMAC(id, student, type, issuedAt).
 - `certificates(event_id, student_id)` issued once per pair at check-in. `signature` is an HMAC over the immutable certificate fields (`lib/certificates.js`); a row whose signature does not verify is shown as Unverified, and `revoked_at` marks a withdrawn certificate.
