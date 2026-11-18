@@ -521,7 +521,7 @@ away.
 - `npx vitest run`: 1587 passed across 176 files, no test modified.
 - `npm run build`: compiles clean.
 - Browser sweep against the production build (`.screenshots/ux-audit`): dashboard data intact after the SQL collapse, route progress bar on navigation, no duplicate banners on `/student/roadmap`, one `h1` per page, mobile menu focus + scroll lock, 404s inside the workspace chrome.
-- `npx playwright test` (production build, full suite): **456 passed, 9 skipped**. The one failure seen in that run was not an assertion — the Chromium context closed mid-sweep (`Target page, context or browser has been closed`) with 1.5 GB free RAM on the machine; the same spec passes alone and in a 3× repeat run.
+- `npx playwright test` (production build, full suite): **457 passed, 9 skipped, 0 failed**. Run with `--workers=4` on this 8 GB machine; an earlier 10-worker run lost one Chromium context mid-sweep (`Target page, context or browser has been closed`) with 1.5 GB free RAM. The affected spec passes alone, on repeat, and in the 4-worker full run.
 - Harness corrections found while verifying (the tests were racing the app, not failing it):
   - `public.spec.js`: the "settled page" guard accepted a body with **zero** `h1` (`<= 1`), so the home assertion could run before streaming finished and then see the hidden + visible copy at once. It now requires exactly one `h1` with text, no `aria-busy`, held across two checks 150 ms apart.
   - `home-redesign.spec.js`: the lazy domain carousel remounts once after its chunk resolves; `scrollIntoViewIfNeeded()` on the detached node throws without retrying, so that one action is wrapped in `toPass()`.
