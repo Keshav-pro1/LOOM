@@ -80,7 +80,9 @@ export async function EventOpsPage({ id, area = "admin" }) {
   return (
     <AppShell area={area} tenant={tenant} user={user}>
       <main className="mx-auto max-w-4xl px-4 pb-14 sm:px-6">
-        <Link href={`/${area}/events`} prefetch={false} className="meta inline-flex items-center gap-1 hover:underline" style={{ color: "var(--accent)" }}>
+        {/* `/lead/events` is only a `[id]` folder, so the lead-area back link has
+            to point at the workshops list that actually exists. */}
+        <Link href={area === "admin" ? "/admin/events" : "/lead/workshops"} prefetch={false} className="meta inline-flex items-center gap-1 hover:underline" style={{ color: "var(--accent)" }}>
           <ArrowLeft size={12} aria-hidden="true" /> {area === "admin" ? "Events console" : "Workshops"}
         </Link>
         <WorkspaceMasthead

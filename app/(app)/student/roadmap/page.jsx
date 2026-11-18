@@ -130,7 +130,7 @@ export default async function RoadmapPage({ searchParams }) {
           ]}
         />
       </div>
-      <div className="pt-2">
+      <main className="pt-2">
         <RoadmapTabs
           domain={domain}
           domains={domains}
@@ -144,7 +144,7 @@ export default async function RoadmapPage({ searchParams }) {
           projectsByNode={projectsByNode}
           zenEnabled={zenEnabled}
         />
-      </div>
+      </main>
     </AppShell>
   );
 }

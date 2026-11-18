@@ -46,7 +46,12 @@ test("homepage carousel supports buttons and keyboard", async ({ page }) => {
   // DOM"), while expect().toContainText() polls and re-resolves, so this order
   // waits out the remount instead of racing it. The assertions are unchanged.
   await expect(carousel.locator(".pl-sr")).toContainText("AI & Machine Learning");
-  await carousel.scrollIntoViewIfNeeded();
+  // ...and the node resolved above can still be the pre-swap one: scrolling a
+  // detached node throws immediately instead of retrying, so retry the scroll
+  // until it lands on the mounted carousel.
+  await expect(async () => {
+    await carousel.scrollIntoViewIfNeeded();
+  }).toPass({ timeout: 15_000 });
   await carousel.getByRole("button", { name: "Next", exact: true }).click();
   await expect(carousel.locator(".pl-sr")).toContainText("Web Development");
   await carousel.focus();

@@ -105,9 +105,12 @@ export function StudentDashboard({
                 <span>{greeting}</span>
                 <span>{todayLabel}</span>
               </p>
+              {/* The page's own title — the node below is content, not the page.
+                  Screen readers announced "HTML5" as the name of /student. */}
+              <h1 id="desk-hero-title" className="sr-only">Your dashboard</h1>
               {nextNode ? (
                 <>
-                  <h1 id="desk-hero-title" className="desk-title">{nextNode.title}</h1>
+                  <h2 className="desk-title">{nextNode.title}</h2>
                   <p className="desk-lede">
                     You are <strong>{remaining === 1 ? "1 step" : `${remaining} steps`} away</strong> from completing your next {domainLabel} milestone.
                   </p>
@@ -123,7 +126,7 @@ export function StudentDashboard({
                 </>
               ) : (
                 <>
-                  <h1 id="desk-hero-title" className="desk-title">The whole path, walked.</h1>
+                  <h2 className="desk-title">The whole path, walked.</h2>
                   <p className="desk-lede">
                     Every milestone verified - {verifiedIds.length} of {nodes.length}. Turn momentum into public proof.
                   </p>

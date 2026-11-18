@@ -90,7 +90,7 @@ export default async function SettingsPage() {
             ].map(([k, v, href]) => (
               <div key={k} className="flex flex-wrap items-baseline justify-between gap-2 border-b py-3.5 first:border-t" style={{ borderColor: "var(--line)" }}>
                 <dt className="text-sm font-medium" style={{ color: "var(--text-muted)" }}>{k}</dt>
-                <dd><Link href={href} className="text-sm font-semibold hover:underline" style={{ color: "var(--accent)" }}>{v}</Link></dd>
+                <dd><Link prefetch={false} href={href} className="text-sm font-semibold hover:underline" style={{ color: "var(--accent)" }}>{v}</Link></dd>
               </div>
             ))}
           </dl>
@@ -100,7 +100,7 @@ export default async function SettingsPage() {
 
         <WorkspaceSection index="03" title="Trust & session" note="Notifications and the session on this device.">
           <div className="mt-4 flex flex-wrap items-center gap-x-8 gap-y-3">
-            <Link href="/student/notifications" className="text-sm font-semibold hover:underline" style={{ color: "var(--accent)" }}>
+            <Link prefetch={false} href="/student/notifications" className="text-sm font-semibold hover:underline" style={{ color: "var(--accent)" }}>
               Notification history →
             </Link>
             <form action="/auth/signout" method="post">

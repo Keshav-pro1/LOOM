@@ -2,18 +2,31 @@ const { test, expect } = require("@playwright/test");
 
 // During hydration the router can briefly hold two copies of the route in the
 // DOM. "Exactly one h1" is a property of the settled page, so assertions must
-// not race the swap: wait for the loading boundary to clear and for the
-// duplicate (if any) to disappear before handing control back to the test.
+// not race the swap. A single check is not enough in either direction: a
+// not-yet-streamed body has zero h1s, and the streamed swap can leave a hidden
+// copy beside the visible one for a frame. Require the condition to hold twice,
+// 150ms apart, before handing control back to the test.
+async function settled(page) {
+  return page.evaluate(
+    () =>
+      document.querySelectorAll("h1").length === 1 &&
+      document.querySelector("h1").innerText.trim().length > 0 &&
+      !document.querySelector('[aria-busy="true"]')
+  );
+}
+
 async function open(page, path) {
   const res = await page.goto(path);
-  await page.waitForFunction(
-    () =>
-      !document.querySelector('[aria-busy="true"]') &&
-      document.querySelectorAll("h1").length <= 1,
-    undefined,
-    { timeout: 15000 }
-  );
-  return res;
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (await settled(page)) {
+      await page.waitForTimeout(150);
+      if (await settled(page)) return res;
+    } else {
+      await page.waitForTimeout(100);
+    }
+  }
+  throw new Error(`page never settled to exactly one h1: ${path}`);
 }
 
 
@@ -50,7 +63,9 @@ test.describe("LOOM public pages", () => {
     const res = await open(page, "/account-status?state=suspended");
     expect(res?.status()).toBe(200);
     await expect(page.locator("h1")).toContainText("suspended");
-    await expect(page.getByRole("link", { name: "Sign out" })).toBeVisible();
+    // Sign-out is a POST form (a GET link can be triggered cross-site); the
+    // accessible name is unchanged, the role is button.
+    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   });
 });
 

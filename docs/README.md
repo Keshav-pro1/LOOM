@@ -23,6 +23,8 @@ Learning, Opportunity, Open source, Mentorship — one student journey per chapt
 | [**Hardening and integration plan**](25-hardening-and-integration-plan.md) | Operators, developers, product | P0 security/data fixes, backend and workflow hardening, coupling cleanup, department integrations, and phased execution |
 | [**RLS rollout runbook**](rls-rollout-runbook.md) | Operators | Enabling database-level tenant isolation, verifying it, rolling it back |
 | [**Local & production config**](27-local-and-production-config.md) | Operators | One codebase, two origins: separate GitHub OAuth Apps, Auth0/Supabase allow-lists, `NEXT_PUBLIC_APP_URL` in Vercel, `tenant_domains` rows, and the function-region fix |
+| [**UX overhaul plan**](28-ux-overhaul-plan.md) | Product, design, developers | Three-pass discover→improve→challenge plan: route-inventory contract (no orphans), journey tests A–F, IA/navigation rules, the replacement loading model, implementation slices, gates, defect-ledger format, open decisions |
+| [**UX & accessibility audit: findings**](29-ux-audit-findings.md) | Product, design, developers, QA | 39 evidence-backed defects (P0–P3) from driving the production build in a real browser: 108 routes, 3 viewports/roles, axe-core on 28 pages, measured timings. Every entry has route, role, steps, expected vs actual, file:line root cause, and an approval sheet mapped to slices S1–S10 |
 
 ## Read this before deploying
 
